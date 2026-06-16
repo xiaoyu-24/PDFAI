@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+.env
+*.db
+*.sqlite3
+
+/storage/uploads/*
+/storage/pages/*
+/storage/regions/*
+/storage/ai_outputs/*
+/storage/exports/*
+!/storage/uploads/.gitkeep
+!/storage/pages/.gitkeep
+!/storage/regions/.gitkeep
+!/storage/ai_outputs/.gitkeep
+!/storage/exports/.gitkeep
+
+node_modules/
+.venv/
+venv/
+
+.DS_Store
+Thumbs.db
+*.log
+
+.coverage
+htmlcov/
+.pytest_cache/
+pytest.xml
+
+# Development docs
+*计划*.md
+*实施计划*.md
+
+# Tests
+backend/tests/
+
+# Editor/AI
+.mimocode/
