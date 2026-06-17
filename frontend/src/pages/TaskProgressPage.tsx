@@ -312,7 +312,7 @@ export default function TaskProgressPage() {
                 <Link to="/settings"><Button block>查看系统设置</Button></Link>
               </Space>
             ) : paused ? (
-              <Text type="secondary">任务已暂停。点击“继续”后会重新进入队列，系统最多同时运行 5 个任务。</Text>
+              <Text type="secondary">任务已暂停。点击“继续”后会重新进入队列，系统最多同时运行 3 个任务。</Text>
             ) : (
               <Text type="secondary">任务处理中，页面会自动刷新。上传新任务不会阻塞当前任务。</Text>
             )}

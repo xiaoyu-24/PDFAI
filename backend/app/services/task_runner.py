@@ -6,7 +6,7 @@ from threading import Lock
 
 
 class TaskRunner:
-    def __init__(self, execute: Callable[[int], None], max_workers: int = 5):
+    def __init__(self, execute: Callable[[int], None], max_workers: int = 3):
         self._execute = execute
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._futures: dict[int, Future] = {}

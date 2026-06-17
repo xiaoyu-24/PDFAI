@@ -55,7 +55,7 @@ def _run_full_pipeline(task_id: int) -> None:
 
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-task_runner = TaskRunner(_run_full_pipeline, max_workers=5)
+task_runner = TaskRunner(_run_full_pipeline, max_workers=3)
 
 
 ACTIVE_TASK_STATUSES = {
@@ -134,7 +134,7 @@ def _is_missing_column_error(exc: OperationalError) -> bool:
 
 
 STEP_INFO = {
-    "queued": ("任务已排队", "系统会在并发名额可用时自动开始处理，最多同时运行 5 个任务。"),
+    "queued": ("任务已排队", "系统会在并发名额可用时自动开始处理，最多同时运行 3 个任务。"),
     "paused": ("任务已暂停", "任务已停止在当前阶段边界，可点击继续处理。"),
     "uploaded": ("文件已上传", "任务已创建，正在等待进入处理队列。"),
     "rendering_pages": ("正在转换 PDF 页面", "系统正在把 PDF 页面转换为图像，页数较多时会更久。"),

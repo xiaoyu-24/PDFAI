@@ -60,6 +60,8 @@ class ReportTableRowResponse(BaseModel):
     confidence: float | None = None
     manual_check_label: str
     diff_id: int
+    review_status: str
+    review_status_label: str
 
 
 class ReportTableResponse(BaseModel):

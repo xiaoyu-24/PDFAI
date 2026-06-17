@@ -283,7 +283,7 @@ export default function DashboardPage() {
             刷新
           </Button>
         </Space>
-        <Text type="secondary">共 {total} 个任务，最多同时运行 5 个</Text>
+        <Text type="secondary">共 {total} 个任务，最多同时运行 3 个</Text>
       </div>
       <Table
         rowKey="id"

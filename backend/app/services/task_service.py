@@ -26,6 +26,37 @@ def generate_task_no() -> str:
     return f"TASK-{datetime.datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
 
 
+def classify_ai_error(error: Exception | str) -> str:
+    message = str(error)
+    text = message.lower()
+
+    if any(marker in text for marker in ["401", "unauthorized", "invalid api key", "incorrect api key"]):
+        return f"认证错误: {message}。建议：检查 AI API Key 是否正确，或确认当前服务商账号权限。"
+    if any(marker in text for marker in ["does not support image", "image_url", "vision", "unsupported image"]):
+        return f"模型不支持图片: {message}。建议：检查当前模型是否支持视觉输入。"
+    if any(marker in text for marker in ["json解析失败", "jsondecodeerror", "expecting value", "invalid json"]):
+        return f"JSON解析失败: {message}。建议：模型返回格式不符合要求，请重试或调整模型配置。"
+    if any(marker in text for marker in ["未识别到任何元素", "缺少 elements", "空结果", "empty result"]):
+        return f"空结果: {message}。建议：检查图纸清晰度、识别策略或开启区域小图识别。"
+    if any(marker in text for marker in ["timeout", "timed out", "超时", "429", "rate limit", "限流"]):
+        return f"限流或超时: {message}。建议：稍后重试，或调大 AI 超时时间和降低并发压力。"
+    if any(
+        marker in text
+        for marker in [
+            "ai网络连接中断",
+            "transport",
+            "server disconnected",
+            "connection reset",
+            "unexpected_eof",
+            "remote protocol",
+            "ssl",
+            "connecterror",
+        ]
+    ):
+        return f"网络错误: {message}。建议：检查 AI Base URL、网络代理/防火墙和服务商可用性。"
+    return f"未知错误: {message}。建议：复制错误信息，检查 AI 配置、输入图纸和后端日志。"
+
+
 class TaskService:
     def __init__(self, db: Session, settings: Settings | None = None):
         self.db = db
@@ -128,12 +159,19 @@ class TaskService:
         self.db.commit()
 
         for page in page_sources:
+            started_at = datetime.datetime.now()
             try:
                 layout = provider.detect_layout(page["page_no"], page["width"], page["height"], page["image_path"])
-                run = AiExtractionRun(
-                    file_id=page["file_id"], page_id=page["id"],
-                    model_name=getattr(provider, "_model", "mock_layout"), prompt_version="v1",
-                    input_type="full_page", status="success",
+                finished_at = datetime.datetime.now()
+                run = self._build_ai_run(
+                    provider=provider,
+                    file_id=page["file_id"],
+                    page_id=page["id"],
+                    region_id=None,
+                    input_type="full_page",
+                    status="success",
+                    started_at=started_at,
+                    finished_at=finished_at,
                 )
                 self.db.add(run)
                 self.db.flush()
@@ -145,7 +183,22 @@ class TaskService:
                         bbox_json=reg["bbox"], ai_reason=reg["reason"],
                     ))
             except Exception as e:
-                return self._fail(task, f"布局检测失败: {e}")
+                finished_at = datetime.datetime.now()
+                formatted_error = classify_ai_error(e)
+                self.db.rollback()
+                self.db.add(self._build_ai_run(
+                    provider=provider,
+                    file_id=page["file_id"],
+                    page_id=page["id"],
+                    region_id=None,
+                    input_type="full_page",
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    error_message=formatted_error,
+                ))
+                self.db.commit()
+                return self._fail(task, f"布局检测失败: {formatted_error}")
 
         self.db.commit()
         self._set_status(task, "regions_detected", 40)
@@ -287,18 +340,19 @@ class TaskService:
                 except Exception as exc:
                     finished_at = datetime.datetime.now()
                     duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+                    formatted_error = classify_ai_error(exc)
                     self.db.rollback()
                     self.db.add(AiExtractionRun(
                         file_id=file_info["id"], page_id=source["page_id"], region_id=source["region_id"],
                         model_name=getattr(provider, "_model", "mock_extract"), prompt_version="v1",
                         input_type=context, status="failed",
-                        error_message=str(exc),
+                        error_message=formatted_error,
                         started_at=started_at, finished_at=finished_at,
                         duration_ms=duration_ms, attempt_count=1,
                     ))
                     self.db.commit()
                     source_name = Path(img_path).name if img_path else "unknown"
-                    errors.append(f"{file_info['original_name']}/{source_name}: {exc}")
+                    errors.append(f"{file_info['original_name']}/{source_name}: {formatted_error}")
 
         if source_count == 0:
             self._fail(task, f"{context}元素识别失败: 没有可识别的图像源")
@@ -338,10 +392,23 @@ class TaskService:
                           "category": e.category, "importance": e.importance,
                           "confidence": e.confidence} for e in compare_elements]
         task_id = task.id
+        started_at = datetime.datetime.now()
         self.db.commit()
 
         try:
             result = provider.compare_elements(base_list, compare_list)
+            finished_at = datetime.datetime.now()
+            self.db.add(self._build_ai_run(
+                provider=provider,
+                file_id=task.compare_file_id,
+                page_id=None,
+                region_id=None,
+                input_type="merge",
+                status="success",
+                started_at=started_at,
+                finished_at=finished_at,
+            ))
+            self.db.flush()
             base_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in base_list}
             compare_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in compare_list}
             matches_by_refs: dict[tuple[int | None, int | None], ElementMatch] = {}
@@ -382,7 +449,22 @@ class TaskService:
                 ))
             self.db.commit()
         except Exception as e:
-            return self._fail(task, f"元素对比失败: {e}")
+            finished_at = datetime.datetime.now()
+            formatted_error = classify_ai_error(e)
+            self.db.rollback()
+            self.db.add(self._build_ai_run(
+                provider=provider,
+                file_id=task.compare_file_id,
+                page_id=None,
+                region_id=None,
+                input_type="merge",
+                status="failed",
+                started_at=started_at,
+                finished_at=finished_at,
+                error_message=formatted_error,
+            ))
+            self.db.commit()
+            return self._fail(task, f"元素对比失败: {formatted_error}")
 
         self._set_status(task, "completed", 100)
         task.completed_at = datetime.datetime.now()
@@ -409,6 +491,33 @@ class TaskService:
         task.last_error = message
         task.updated_at = datetime.datetime.now()
         self.db.commit()
+
+    def _build_ai_run(
+        self,
+        provider: VisionModelProvider,
+        file_id: int,
+        page_id: int | None,
+        region_id: int | None,
+        input_type: str,
+        status: str,
+        started_at: datetime.datetime,
+        finished_at: datetime.datetime,
+        error_message: str | None = None,
+    ) -> AiExtractionRun:
+        return AiExtractionRun(
+            file_id=file_id,
+            page_id=page_id,
+            region_id=region_id,
+            model_name=getattr(provider, "_model", "mock_ai"),
+            prompt_version="v1",
+            input_type=input_type,
+            status=status,
+            error_message=error_message,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=int((finished_at - started_at).total_seconds() * 1000),
+            attempt_count=1,
+        )
 
     def _get_both_files(self, task: CompareTask):
         base = self.db.query(PdfFile).filter(PdfFile.id == task.base_file_id).first()

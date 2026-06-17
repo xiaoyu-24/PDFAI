@@ -206,7 +206,7 @@ class OpenAICompatibleProvider(VisionModelProvider):
         if self._is_transport_error(exc):
             return (
                 f"AI网络连接中断: {message}。请检查 AI Base URL、网络代理/防火墙和服务商可用性，"
-                "稍后可点击重试任务。"
+                "稍后可点击重试任务"
             )
         return message
 

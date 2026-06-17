@@ -84,7 +84,7 @@ export default function UploadPage() {
       <Alert
         type="info"
         showIcon
-        title="上传后任务会进入后台队列，系统最多同时运行 5 个任务；你可以继续提交新的 PDF 对比任务。"
+        title="上传后任务会进入后台队列，系统最多同时运行 3 个任务；你可以继续提交新的 PDF 对比任务。"
       />
       {lastTask && (
         <Alert

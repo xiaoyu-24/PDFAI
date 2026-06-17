@@ -31,6 +31,14 @@ RISK_LABELS = {
     "manual_check": "需人工确认",
 }
 
+REVIEW_STATUS_LABELS = {
+    "pending": "待审核",
+    "confirmed": "已确认",
+    "ignored": "已忽略",
+    "misjudged": "AI误判",
+    "modified": "已修改",
+}
+
 
 @dataclass(frozen=True)
 class ReportRow:
@@ -47,6 +55,8 @@ class ReportRow:
     confidence: float | None
     manual_check_label: str
     diff_id: int
+    review_status: str
+    review_status_label: str
 
     def as_excel_values(self) -> list:
         return [
@@ -79,6 +89,8 @@ class ReportRow:
             "confidence": self.confidence,
             "manual_check_label": self.manual_check_label,
             "diff_id": self.diff_id,
+            "review_status": self.review_status,
+            "review_status_label": self.review_status_label,
         }
 
 
@@ -118,6 +130,8 @@ class ReportService:
             confidence=diff.confidence,
             manual_check_label="是" if diff.need_manual_check else "否",
             diff_id=diff.id,
+            review_status=diff.review_status or "",
+            review_status_label=REVIEW_STATUS_LABELS.get(diff.review_status, diff.review_status or ""),
         )
 
     def _classify_section(self, diff: CompareDiff) -> str:

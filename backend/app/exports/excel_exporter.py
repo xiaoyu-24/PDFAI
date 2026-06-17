@@ -42,14 +42,6 @@ DELIVERY_COLUMN_WIDTHS = {
     "L": 12,
 }
 
-DELIVERY_RISK_FILLS = {
-    "高": PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
-    "中": PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"),
-    "低": PatternFill(start_color="D9EAF7", end_color="D9EAF7", fill_type="solid"),
-    "需人工确认": PatternFill(start_color="E2D9F3", end_color="E2D9F3", fill_type="solid"),
-}
-
-
 class ExcelExporter:
     def _style_header(self, ws, headers: list[str]) -> None:
         for col_idx, header in enumerate(headers, 1):
@@ -86,8 +78,6 @@ class ExcelExporter:
             for col_idx, val in enumerate(values, 1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=val)
                 self._style_cell(cell)
-                if col_idx == 4 and val in DELIVERY_RISK_FILLS:
-                    cell.fill = DELIVERY_RISK_FILLS[val]
             if row_idx == 2 or rows[row_idx - 2].section != rows[row_idx - 3].section:
                 for col_idx in range(1, len(REPORT_COLUMNS) + 1):
                     ws.cell(row=row_idx, column=col_idx).fill = PatternFill(

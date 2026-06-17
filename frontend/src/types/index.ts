@@ -129,6 +129,8 @@ export interface ReportTableRow {
   confidence: number | null;
   manual_check_label: string;
   diff_id: number;
+  review_status: ReviewStatus;
+  review_status_label: string;
 }
 
 export interface ReportTableResponse {

@@ -62,6 +62,56 @@ assert(
   "retryTask must convert stale-backend 404 Not Found into a clear Chinese message"
 );
 
+const diffReportSource = read("src/pages/DiffReportPage.tsx");
+assert(
+  !diffReportSource.includes("查看差异报告") && !diffReportSource.includes("view.officeapps.live.com/op/view.aspx"),
+  "DiffReportPage must hide the Office Online Viewer button while the service runs on localhost"
+);
+assert(
+  diffReportSource.includes("全屏查看"),
+  "DiffReportPage must provide a full-screen report viewing button"
+);
+assert(
+  diffReportSource.indexOf("全屏查看") < diffReportSource.indexOf("导出差异报告"),
+  "DiffReportPage full-screen report button must be placed before the export report button"
+);
+assert(
+  diffReportSource.includes("fullscreen-report") && diffReportSource.includes("返回"),
+  "DiffReportPage full-screen report view must include a top-left return button"
+);
+assert(
+  diffReportSource.includes("renderReportToolbar(true)") && diffReportSource.includes("!fullscreen"),
+  "DiffReportPage full-screen report toolbar must hide the full-screen button"
+);
+assert(
+  diffReportSource.includes("closeFullscreenReport") && diffReportSource.includes("setSelectedRow(null)"),
+  "DiffReportPage must close any open report detail drawer when returning from full-screen view"
+);
+assert(
+  diffReportSource.includes("report-table-wrap") && diffReportSource.includes("onRow={(record)"),
+  "DiffReportPage full-screen report table must keep row click behavior for the detail drawer"
+);
+assert(
+  diffReportSource.includes("zIndex={isFullscreen ? 2100 : undefined}"),
+  "DiffReportPage detail drawer must render above the full-screen report overlay"
+);
+assert(
+  diffReportSource.includes("审核状态"),
+  "DiffReportPage online report table must show review status"
+);
+assert(
+  diffReportSource.includes("reviewStatus") && diffReportSource.includes("review_status_label"),
+  "DiffReportPage online report table must support review status filtering"
+);
+assert(
+  (diffReportSource.match(/sorter:/g) || []).length >= 5,
+  "DiffReportPage online report table must support sorting on key report columns"
+);
+assert(
+  !diffReportSource.includes("RISK_COLORS"),
+  "DiffReportPage must not specially color-code the risk/priority column"
+);
+
 const appCss = read("src/App.css");
 assert(
   appCss.includes("height: 100vh") && appCss.includes("overflow: hidden"),
@@ -74,6 +124,12 @@ assert(
 assert(
   appCss.includes("overflow-y: auto"),
   "content area must own vertical scrolling"
+);
+assert(
+  appCss.includes("report-table-wrap") &&
+    appCss.includes("white-space: normal") &&
+    appCss.includes("word-break: break-word"),
+  "report table cells must wrap long text in normal and full-screen views"
 );
 
 console.log("navigation regression checks passed");

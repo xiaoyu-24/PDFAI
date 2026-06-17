@@ -83,6 +83,45 @@
   margin-bottom: 16px;
 }
 
+.report-toolbar {
+  align-items: flex-start;
+}
+
+.fullscreen-report {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+.fullscreen-report-header {
+  min-height: 64px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #e6eaf2;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.fullscreen-report-body {
+  padding: 16px 24px 24px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.report-table-wrap .ant-table-cell {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+.report-table-wrap .ant-table-cell-ellipsis {
+  white-space: normal;
+}
+
 .file-meta {
   margin-top: 16px;
 }

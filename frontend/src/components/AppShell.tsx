@@ -66,7 +66,7 @@ export default function AppShell() {
           <div className="brand-mark">P</div>
           <div>
             <Title level={4} className="brand-title">PDFAI</Title>
-            <Text type="secondary">工程图纸差异审核工作台</Text>
+            <Text type="secondary">PDF审核自动审核系统</Text>
           </div>
         </Space>
         <Space>
