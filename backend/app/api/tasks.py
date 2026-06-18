@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import datetime
 import json
+from urllib.parse import quote
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
@@ -56,6 +58,8 @@ def _run_full_pipeline(task_id: int) -> None:
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 task_runner = TaskRunner(_run_full_pipeline, max_workers=3)
+
+ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 ACTIVE_TASK_STATUSES = {
@@ -183,12 +187,12 @@ def _recognition_strategy(settings) -> dict:
 async def create_task(
     base_file: UploadFile = File(...),
     compare_file: UploadFile = File(...),
+    base_file_format: str = Form("pdf"),
+    compare_file_format: str = Form("pdf"),
     db: Session = Depends(get_db),
 ):
-    if not base_file.filename or not base_file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=422, detail="基准文件必须是PDF格式")
-    if not compare_file.filename or not compare_file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=422, detail="对比文件必须是PDF格式")
+    _validate_upload_format(base_file, base_file_format, "基准文件")
+    _validate_upload_format(compare_file, compare_file_format, "对比文件")
 
     base_bytes = await base_file.read()
     compare_bytes = await compare_file.read()
@@ -199,6 +203,8 @@ async def create_task(
         base_filename=base_file.filename,
         compare_pdf_bytes=compare_bytes,
         compare_filename=compare_file.filename,
+        base_file_format=base_file_format,
+        compare_file_format=compare_file_format,
     )
 
     task.status = "queued"
@@ -207,6 +213,21 @@ async def create_task(
     task_runner.submit(task.id)
 
     return _task_to_response(task)
+
+
+def _validate_upload_format(file: UploadFile, file_format: str, label: str) -> None:
+    normalized_format = file_format.lower()
+    filename = file.filename or ""
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if normalized_format == "pdf":
+        if not filename or suffix != ".pdf":
+            raise HTTPException(status_code=422, detail=f"{label}必须是PDF格式")
+        return
+    if normalized_format == "image":
+        if not filename or suffix not in ALLOWED_IMAGE_SUFFIXES:
+            raise HTTPException(status_code=422, detail=f"{label}必须是PNG、JPG/JPEG或WebP图片")
+        return
+    raise HTTPException(status_code=422, detail="文件格式只能是pdf或image")
 
 
 @router.get("", response_model=TaskListResponse)
@@ -377,10 +398,13 @@ def get_task_diff_summary(task_id: int, db: Session = Depends(get_db)):
         "misjudged": 0,
         "modified": 0,
     }
-    rows = db.query(CompareDiff).filter(CompareDiff.compare_task_id == task.id).all()
-    for diff in rows:
-        risk_counts[diff.risk_level] = risk_counts.get(diff.risk_level, 0) + 1
-        review_counts[diff.review_status] = review_counts.get(diff.review_status, 0) + 1
+    rows = ReportService(db).build_diff_report_rows(task.id)
+    risk_label_to_key = {"高": "high", "中": "medium", "低": "low", "需人工确认": "manual_check"}
+    for row in rows:
+        risk_key = risk_label_to_key.get(row.risk_label)
+        if risk_key:
+            risk_counts[risk_key] = risk_counts.get(risk_key, 0) + 1
+        review_counts[row.review_status] = review_counts.get(row.review_status, 0) + 1
 
     return DiffSummaryResponse(
         total_count=len(rows),
@@ -442,8 +466,17 @@ def export_diffs(task_id: int, db: Session = Depends(get_db)):
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=diff_report_{task.task_no}.xlsx"},
+        headers={"Content-Disposition": _download_content_disposition(_timestamped_report_filename())},
     )
+
+
+def _timestamped_report_filename() -> str:
+    return f"报告{datetime.datetime.now().strftime('%Y%m%d-%H-%M-%S')}.xlsx"
+
+
+def _download_content_disposition(filename: str) -> str:
+    ascii_fallback = filename.replace("报告", "report")
+    return f"attachment; filename={ascii_fallback}; filename*=UTF-8''{quote(filename)}"
 
 
 @router.get("/{task_id}/exports/elements")
@@ -540,19 +573,11 @@ def _task_observability(task) -> dict:
 
 def _task_to_list_item(task, db: Session) -> TaskListItemResponse:
     response = _task_to_response(task)
+    report_rows = ReportService(db).build_diff_report_rows(task.id)
     counts = {
-        "diff_count": db.query(func.count(CompareDiff.id))
-        .filter(CompareDiff.compare_task_id == task.id)
-        .scalar()
-        or 0,
-        "high_risk_count": db.query(func.count(CompareDiff.id))
-        .filter(CompareDiff.compare_task_id == task.id, CompareDiff.risk_level == "high")
-        .scalar()
-        or 0,
-        "pending_review_count": db.query(func.count(CompareDiff.id))
-        .filter(CompareDiff.compare_task_id == task.id, CompareDiff.review_status == "pending")
-        .scalar()
-        or 0,
+        "diff_count": len(report_rows),
+        "high_risk_count": sum(1 for row in report_rows if row.risk_label == "高"),
+        "pending_review_count": sum(1 for row in report_rows if row.review_status == "pending"),
     }
     return TaskListItemResponse(**response.model_dump(), **counts)
 

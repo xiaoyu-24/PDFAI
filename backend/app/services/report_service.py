@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from sqlalchemy.orm import Session
 
@@ -17,9 +18,9 @@ REPORT_COLUMNS = [
     "结论/差异/原因",
     "影响范围",
     "建议动作",
-    "证据/核对区域",
     "置信度",
     "需人工确认",
+    "证据/核对区域",
 ]
 
 SECTION_ORDER = ["已确认一致项", "实质差异项", "不确定项", "识别不足项", "需人工确认项"]
@@ -39,6 +40,73 @@ REVIEW_STATUS_LABELS = {
     "modified": "已修改",
 }
 
+REPORT_EXCLUDE_KEYWORDS = [
+    "修订记录",
+    "修订历史",
+    "修改历史",
+    "修改记录",
+    "一般公差",
+    "角度公差",
+    "公差",
+    "logo",
+    "名字",
+    "料号",
+    "公司名称",
+    "公司信息",
+    "图纸编号",
+    "图纸名称",
+    "图号",
+    "制造商",
+    "厂商",
+    "厂家",
+    "生产商",
+    "供应商名称",
+    "供应商信息",
+    "客户名称",
+    "项目名称",
+    "零件号",
+    "图纸号",
+    "part no",
+    "dwg no",
+    "绘图信息",
+    "drawn by",
+    "地址",
+    "电话",
+    "传真",
+    "邮箱",
+    "网址",
+    "日期",
+]
+
+REPORT_EXCLUDE_CATEGORY_KEYWORDS = [
+    "图纸元信息",
+    "图纸标识",
+    "材料标识",
+    "文档控制",
+    "变更记录",
+    "产品信息",
+    "标识信息",
+    "标题栏",
+]
+
+PARAMETER_CATEGORY_KEYWORDS = [
+    "尺寸",
+    "结构",
+    "技术要求",
+    "性能",
+    "加工",
+    "BOM",
+    "物料",
+    "线长",
+    "防水",
+]
+
+PARAMETER_FRAGMENT_RE = re.compile(
+    r"(?:[A-Za-z]*\d+(?:\.\d+)?\s*(?:±\s*\d+(?:\.\d+)?)?\s*(?:mm|MM|cm|CM|m|M|%|°|度|V|A|W|Ω|pcs|PCS)?)"
+    r"|(?:[Xx]\d+)"
+    r"|(?:[\u4e00-\u9fa5A-Za-z0-9±+\-/%]*结构[\u4e00-\u9fa5A-Za-z0-9±+\-/%]*)"
+)
+
 
 @dataclass(frozen=True)
 class ReportRow:
@@ -57,6 +125,7 @@ class ReportRow:
     diff_id: int
     review_status: str
     review_status_label: str
+    conclusion_highlights: list[dict[str, int]]
 
     def as_excel_values(self) -> list:
         return [
@@ -69,9 +138,9 @@ class ReportRow:
             self.conclusion,
             self.impact,
             self.suggestion,
-            self.evidence,
             self.confidence if self.confidence is not None else "",
             self.manual_check_label,
+            self.evidence,
         ]
 
     def as_dict(self) -> dict:
@@ -91,6 +160,7 @@ class ReportRow:
             "diff_id": self.diff_id,
             "review_status": self.review_status,
             "review_status_label": self.review_status_label,
+            "conclusion_highlights": self.conclusion_highlights,
         }
 
 
@@ -107,6 +177,8 @@ class ReportService:
         )
         grouped: dict[str, list[CompareDiff]] = {section: [] for section in SECTION_ORDER}
         for diff in diffs:
+            if self._should_exclude(diff):
+                continue
             grouped[self._classify_section(diff)].append(diff)
 
         rows: list[ReportRow] = []
@@ -132,7 +204,55 @@ class ReportService:
             diff_id=diff.id,
             review_status=diff.review_status or "",
             review_status_label=REVIEW_STATUS_LABELS.get(diff.review_status, diff.review_status or ""),
+            conclusion_highlights=self._conclusion_highlights(diff),
         )
+
+    def _should_exclude(self, diff: CompareDiff) -> bool:
+        category = (diff.diff_category or "").lower()
+        if any(keyword.lower() in category for keyword in REPORT_EXCLUDE_CATEGORY_KEYWORDS):
+            return True
+        text = self._diff_search_text(diff).lower()
+        return any(keyword.lower() in text for keyword in REPORT_EXCLUDE_KEYWORDS)
+
+    def _diff_search_text(self, diff: CompareDiff) -> str:
+        values = [
+            diff.diff_category,
+            diff.base_content,
+            diff.compare_content,
+            diff.diff_summary,
+            diff.impact,
+            diff.suggestion,
+        ]
+        for element in [diff.base_element, diff.compare_element]:
+            if not element:
+                continue
+            values.extend([
+                element.category,
+                element.element_name,
+                element.raw_value,
+                element.region_desc,
+            ])
+        return " ".join(value for value in values if value)
+
+    def _conclusion_highlights(self, diff: CompareDiff) -> list[dict[str, int]]:
+        conclusion = diff.diff_summary or ""
+        if not conclusion or not self._is_parameter_diff(diff):
+            return []
+
+        ranges = [
+            {"start": match.start(), "end": match.end()}
+            for match in PARAMETER_FRAGMENT_RE.finditer(conclusion)
+            if match.start() < match.end()
+        ]
+        if ranges:
+            return ranges
+        return [{"start": 0, "end": len(conclusion)}]
+
+    def _is_parameter_diff(self, diff: CompareDiff) -> bool:
+        text = self._diff_search_text(diff)
+        if PARAMETER_FRAGMENT_RE.search(text):
+            return True
+        return any(keyword in text for keyword in PARAMETER_CATEGORY_KEYWORDS)
 
     def _classify_section(self, diff: CompareDiff) -> str:
         text = " ".join(

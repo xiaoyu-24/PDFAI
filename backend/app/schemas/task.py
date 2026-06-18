@@ -62,6 +62,7 @@ class ReportTableRowResponse(BaseModel):
     diff_id: int
     review_status: str
     review_status_label: str
+    conclusion_highlights: list[dict[str, int]] = []
 
 
 class ReportTableResponse(BaseModel):

@@ -66,7 +66,7 @@ export default function ElementsPage() {
     return elements.filter((item) => {
       if (manualOnly && !item.need_manual_check) return false;
       if (!lowerKeyword) return true;
-      return [item.element_name, item.category, item.raw_value, item.normalized_value, item.region_desc]
+      return [item.element_name, item.category, item.raw_value, item.region_desc]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(lowerKeyword));
     });
@@ -80,13 +80,6 @@ export default function ElementsPage() {
       dataIndex: "raw_value",
       key: "raw_value",
       ellipsis: true,
-      render: (value) => value || "-",
-    },
-    {
-      title: "标准化值",
-      dataIndex: "normalized_value",
-      key: "normalized_value",
-      width: 170,
       render: (value) => value || "-",
     },
     {

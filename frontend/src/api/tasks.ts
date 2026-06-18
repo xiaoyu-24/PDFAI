@@ -20,15 +20,28 @@ export async function listTasks(params?: {
   return data;
 }
 
-export async function uploadPdfs(
+export type UploadFileFormat = "pdf" | "image";
+
+export async function uploadTaskFiles(
   baseFile: File,
-  compareFile: File
+  compareFile: File,
+  baseFileFormat: UploadFileFormat = "pdf",
+  compareFileFormat: UploadFileFormat = "pdf"
 ): Promise<CompareTask> {
   const formData = new FormData();
   formData.append("base_file", baseFile);
   formData.append("compare_file", compareFile);
+  formData.append("base_file_format", baseFileFormat);
+  formData.append("compare_file_format", compareFileFormat);
   const { data } = await apiClient.post<CompareTask>("/tasks", formData);
   return data;
+}
+
+export async function uploadPdfs(
+  baseFile: File,
+  compareFile: File
+): Promise<CompareTask> {
+  return uploadTaskFiles(baseFile, compareFile, "pdf", "pdf");
 }
 
 export async function getTask(taskId: number): Promise<CompareTask> {

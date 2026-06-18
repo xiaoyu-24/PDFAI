@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Button,
   Card,
@@ -55,6 +55,37 @@ function confidenceLabel(value: number | null) {
 
 function compareText(a?: string | null, b?: string | null) {
   return String(a || "").localeCompare(String(b || ""), "zh-Hans-CN");
+}
+
+function renderHighlightedConclusion(row: ReportTableRow) {
+  const text = row.conclusion || "-";
+  const highlights = row.conclusion_highlights || [];
+  if (!row.conclusion || highlights.length === 0) return text;
+
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  highlights
+    .filter((range) => range.start >= 0 && range.end > range.start && range.start < text.length)
+    .sort((a, b) => a.start - b.start)
+    .forEach((range, index) => {
+      const start = Math.max(cursor, range.start);
+      const end = Math.min(text.length, range.end);
+      if (start > cursor) {
+        parts.push(text.slice(cursor, start));
+      }
+      if (end > start) {
+        parts.push(
+          <mark className="report-highlight" key={`${start}-${end}-${index}`}>
+            {text.slice(start, end)}
+          </mark>
+        );
+        cursor = end;
+      }
+    });
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
+  }
+  return parts.length > 0 ? parts : text;
 }
 
 export default function DiffReportPage() {
@@ -185,10 +216,16 @@ export default function DiffReportPage() {
     },
     { title: "基准内容", dataIndex: "base_content", key: "base_content", width: 320, ellipsis: true },
     { title: "对比内容", dataIndex: "compare_content", key: "compare_content", width: 320, ellipsis: true },
-    { title: "结论/差异/原因", dataIndex: "conclusion", key: "conclusion", width: 380, ellipsis: true },
+    {
+      title: "结论/差异/原因",
+      dataIndex: "conclusion",
+      key: "conclusion",
+      width: 380,
+      ellipsis: true,
+      render: (_value, record) => renderHighlightedConclusion(record),
+    },
     { title: "影响范围", dataIndex: "impact", key: "impact", width: 260, ellipsis: true },
     { title: "建议动作", dataIndex: "suggestion", key: "suggestion", width: 300, ellipsis: true },
-    { title: "证据/核对区域", dataIndex: "evidence", key: "evidence", width: 260, ellipsis: true },
     {
       title: "置信度",
       dataIndex: "confidence",
@@ -205,6 +242,7 @@ export default function DiffReportPage() {
       sorter: (a, b) => compareText(a.manual_check_label, b.manual_check_label),
       render: (value: string) => value === "是" ? <Tag color="purple">是</Tag> : <Tag>否</Tag>,
     },
+    { title: "证据/核对区域", dataIndex: "evidence", key: "evidence", width: 260, ellipsis: true },
     {
       title: "审核状态",
       dataIndex: "review_status_label",
@@ -349,12 +387,12 @@ export default function DiffReportPage() {
             <Descriptions.Item label="审核状态">{selectedRow.review_status_label || "-"}</Descriptions.Item>
             <Descriptions.Item label="基准内容">{selectedRow.base_content || "-"}</Descriptions.Item>
             <Descriptions.Item label="对比内容">{selectedRow.compare_content || "-"}</Descriptions.Item>
-            <Descriptions.Item label="结论/差异/原因">{selectedRow.conclusion || "-"}</Descriptions.Item>
+            <Descriptions.Item label="结论/差异/原因">{renderHighlightedConclusion(selectedRow)}</Descriptions.Item>
             <Descriptions.Item label="影响范围">{selectedRow.impact || "-"}</Descriptions.Item>
             <Descriptions.Item label="建议动作">{selectedRow.suggestion || "-"}</Descriptions.Item>
-            <Descriptions.Item label="证据/核对区域">{selectedRow.evidence || "-"}</Descriptions.Item>
             <Descriptions.Item label="置信度">{confidenceLabel(selectedRow.confidence)}</Descriptions.Item>
             <Descriptions.Item label="需人工确认">{selectedRow.manual_check_label}</Descriptions.Item>
+            <Descriptions.Item label="证据/核对区域">{selectedRow.evidence || "-"}</Descriptions.Item>
           </Descriptions>
         )}
       </Drawer>

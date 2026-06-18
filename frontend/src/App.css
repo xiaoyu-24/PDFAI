@@ -122,6 +122,12 @@
   white-space: normal;
 }
 
+.report-highlight {
+  background: #fff2cc;
+  color: inherit;
+  padding: 0 2px;
+}
+
 .file-meta {
   margin-top: 16px;
 }

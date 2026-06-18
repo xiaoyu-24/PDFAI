@@ -57,9 +57,27 @@ for (const [file, expectedTarget] of Object.entries(secondLevelBackTargets)) {
 }
 
 const apiSource = read("src/api/tasks.ts");
+const uploadPageSource = read("src/pages/UploadPage.tsx");
+assert(
+  uploadPageSource.includes("Segmented") &&
+    uploadPageSource.includes("baseFileFormat") &&
+    uploadPageSource.includes("compareFileFormat"),
+  "UploadPage must provide independent PDF/image format switches for base and compare drawings"
+);
+assert(
+  uploadPageSource.includes("image/png,image/jpeg,image/jpg,image/webp") &&
+    uploadPageSource.includes("请上传 PNG、JPG/JPEG 或 WebP 图片"),
+  "UploadPage image mode must accept PNG, JPG/JPEG and WebP only"
+);
 assert(
   apiSource.includes("重试接口未加载") && apiSource.includes("Not Found"),
   "retryTask must convert stale-backend 404 Not Found into a clear Chinese message"
+);
+assert(
+  apiSource.includes("uploadTaskFiles") &&
+    apiSource.includes("base_file_format") &&
+    apiSource.includes("compare_file_format"),
+  "task upload API must submit the selected file formats to the backend"
 );
 
 const diffReportSource = read("src/pages/DiffReportPage.tsx");
@@ -100,6 +118,12 @@ assert(
   "DiffReportPage online report table must show review status"
 );
 assert(
+  diffReportSource.includes("renderHighlightedConclusion") &&
+    diffReportSource.includes("conclusion_highlights") &&
+    diffReportSource.includes("report-highlight"),
+  "DiffReportPage must render highlighted parameter fragments in conclusions"
+);
+assert(
   diffReportSource.includes("reviewStatus") && diffReportSource.includes("review_status_label"),
   "DiffReportPage online report table must support review status filtering"
 );
@@ -111,8 +135,23 @@ assert(
   !diffReportSource.includes("RISK_COLORS"),
   "DiffReportPage must not specially color-code the risk/priority column"
 );
+const diffReportColumnsSource = diffReportSource.slice(
+  diffReportSource.indexOf("const columns"),
+  diffReportSource.indexOf("const closeFullscreenReport")
+);
+assert(
+  diffReportColumnsSource.indexOf('dataIndex: "manual_check_label"') <
+    diffReportColumnsSource.indexOf('dataIndex: "evidence"'),
+  "DiffReportPage must place evidence/check area to the right of manual confirmation"
+);
 
 const appCss = read("src/App.css");
+const elementsPageSource = read("src/pages/ElementsPage.tsx");
+assert(
+  !elementsPageSource.includes("normalized_value") && !elementsPageSource.includes("标准化值"),
+  "ElementsPage must show only raw element content and must not render normalized content"
+);
+
 assert(
   appCss.includes("height: 100vh") && appCss.includes("overflow: hidden"),
   "app shell must keep scrolling inside the content area"

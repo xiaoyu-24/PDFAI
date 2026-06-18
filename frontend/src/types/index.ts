@@ -131,6 +131,7 @@ export interface ReportTableRow {
   diff_id: number;
   review_status: ReviewStatus;
   review_status_label: string;
+  conclusion_highlights: Array<{ start: number; end: number }>;
 }
 
 export interface ReportTableResponse {

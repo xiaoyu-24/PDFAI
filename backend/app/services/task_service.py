@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from PIL import Image
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings, Settings
@@ -68,9 +69,11 @@ class TaskService:
         base_filename: str,
         compare_pdf_bytes: bytes,
         compare_filename: str,
+        base_file_format: str = "pdf",
+        compare_file_format: str = "pdf",
     ) -> CompareTask:
-        base_file = self._save_pdf_file(base_pdf_bytes, base_filename, "base")
-        compare_file = self._save_pdf_file(compare_pdf_bytes, compare_filename, "compare")
+        base_file = self._save_input_file(base_pdf_bytes, base_filename, "base", base_file_format)
+        compare_file = self._save_input_file(compare_pdf_bytes, compare_filename, "compare", compare_file_format)
         task = CompareTask(
             task_no=generate_task_no(),
             base_file_id=base_file.id,
@@ -83,27 +86,40 @@ class TaskService:
         self.db.refresh(task)
         return task
 
-    def _save_pdf_file(self, pdf_bytes: bytes, filename: str, file_role: str) -> PdfFile:
-        file_hash = compute_hash(pdf_bytes)
+    def _save_input_file(self, file_bytes: bytes, filename: str, file_role: str, file_format: str) -> PdfFile:
+        normalized_format = file_format.lower()
+        if normalized_format not in {"pdf", "image"}:
+            raise ValueError("文件格式只能是 pdf 或 image")
+
+        file_hash = compute_hash(file_bytes)
         uploads_dir = self.settings.get_storage_path("uploads")
         uploads_dir.mkdir(parents=True, exist_ok=True)
         stored_name = f"{uuid.uuid4().hex}_{filename}"
         stored_path = uploads_dir / stored_name
-        stored_path.write_bytes(pdf_bytes)
+        stored_path.write_bytes(file_bytes)
 
-        import fitz
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        page_count = doc.page_count
-        doc.close()
+        if normalized_format == "pdf":
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            page_count = doc.page_count
+            doc.close()
+        else:
+            with Image.open(stored_path) as image:
+                image.verify()
+            page_count = 1
 
         pdf_file = PdfFile(
             original_name=filename, stored_path=str(stored_path),
-            file_hash=file_hash, page_count=page_count, file_role=file_role, status="uploaded",
+            file_hash=file_hash, page_count=page_count, file_role=file_role,
+            file_type=normalized_format, status="uploaded",
         )
         self.db.add(pdf_file)
         self.db.commit()
         self.db.refresh(pdf_file)
         return pdf_file
+
+    def _save_pdf_file(self, pdf_bytes: bytes, filename: str, file_role: str) -> PdfFile:
+        return self._save_input_file(pdf_bytes, filename, file_role, "pdf")
 
     def _get_provider(self) -> VisionModelProvider:
         if self.settings.has_real_ai_config:
@@ -126,8 +142,11 @@ class TaskService:
 
         for file_obj in (base_file, compare_file):
             try:
-                pdf_bytes = Path(file_obj.stored_path).read_bytes()
-                results = renderer.render_to_images(pdf_bytes, file_obj.id, pages_dir)
+                if file_obj.file_type == "image":
+                    results = [self._image_file_as_page(file_obj)]
+                else:
+                    pdf_bytes = Path(file_obj.stored_path).read_bytes()
+                    results = renderer.render_to_images(pdf_bytes, file_obj.id, pages_dir)
                 for r in results:
                     self.db.add(PdfPage(file_id=file_obj.id, page_no=r["page_no"],
                                          image_path=r["image_path"], width=r["width"],
@@ -137,6 +156,17 @@ class TaskService:
                 return self._fail(task, f"{file_obj.file_role} PDF渲染失败: {e}")
 
         self._set_status(task, "rendered", 25)
+
+    def _image_file_as_page(self, file_obj: PdfFile) -> dict[str, Any]:
+        with Image.open(file_obj.stored_path) as image:
+            width, height = image.size
+        return {
+            "page_no": 1,
+            "image_path": file_obj.stored_path,
+            "width": width,
+            "height": height,
+            "dpi": self.settings.PDF_RENDER_DPI,
+        }
 
     # ─── Step 2: Detect Regions ───
     def detect_regions(self, task: CompareTask) -> None:
@@ -535,15 +565,10 @@ class TaskService:
             raise ValueError("原始文件缺失，请重新创建任务")
 
         file_ids = [task.base_file_id, task.compare_file_id]
-        self.db.query(CompareDiff).filter(CompareDiff.compare_task_id == task.id).delete(synchronize_session=False)
-        self.db.query(ElementMatch).filter(ElementMatch.compare_task_id == task.id).delete(synchronize_session=False)
-        self.db.query(DrawingElement).filter(DrawingElement.file_id.in_(file_ids)).delete(synchronize_session=False)
-        self.db.query(AiExtractionRun).filter(AiExtractionRun.file_id.in_(file_ids)).delete(synchronize_session=False)
-        self.db.query(PageRegion).filter(PageRegion.file_id.in_(file_ids)).delete(synchronize_session=False)
-        self.db.query(PdfPage).filter(PdfPage.file_id.in_(file_ids)).delete(synchronize_session=False)
+        retry_status = self._clear_retry_data_for_stage(task, file_ids, task.failed_stage)
 
-        task.status = "queued"
-        task.progress = 0
+        task.status = retry_status
+        task.progress = self._retry_progress_for_status(retry_status)
         task.summary = None
         task.completed_at = None
         task.failed_stage = None
@@ -553,3 +578,121 @@ class TaskService:
         self.db.commit()
         self.db.refresh(task)
         return task
+
+    def _clear_retry_data_for_stage(self, task: CompareTask, file_ids: list[int], failed_stage: str | None) -> str:
+        if failed_stage == "detecting_regions":
+            self._clear_from_regions(file_ids, task.id)
+            return "rendered"
+        if failed_stage == "cropping_regions":
+            self._clear_from_crops(file_ids, task.id)
+            return "regions_detected"
+        if failed_stage == "extracting_full_page_elements":
+            self._clear_from_full_page_elements(file_ids, task.id)
+            return "regions_cropped"
+        if failed_stage == "extracting_region_elements":
+            self._clear_from_region_elements(file_ids, task.id)
+            return "extracting_region_elements"
+        if failed_stage in {"comparing_elements", "saving_diffs"}:
+            self._clear_from_compare(task.id, file_ids)
+            return "comparing_elements"
+
+        self._clear_all_generated_data(task.id, file_ids)
+        return "queued"
+
+    def _clear_all_generated_data(self, task_id: int, file_ids: list[int]) -> None:
+        self.db.query(CompareDiff).filter(CompareDiff.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(ElementMatch).filter(ElementMatch.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(DrawingElement).filter(DrawingElement.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(AiExtractionRun).filter(AiExtractionRun.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(PageRegion).filter(PageRegion.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(PdfPage).filter(PdfPage.file_id.in_(file_ids)).delete(synchronize_session=False)
+
+    def _clear_from_regions(self, file_ids: list[int], task_id: int) -> None:
+        self.db.query(CompareDiff).filter(CompareDiff.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(ElementMatch).filter(ElementMatch.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(DrawingElement).filter(DrawingElement.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(AiExtractionRun).filter(AiExtractionRun.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(PageRegion).filter(PageRegion.file_id.in_(file_ids)).delete(synchronize_session=False)
+
+    def _clear_from_crops(self, file_ids: list[int], task_id: int) -> None:
+        self.db.query(CompareDiff).filter(CompareDiff.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(ElementMatch).filter(ElementMatch.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(DrawingElement).filter(DrawingElement.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(AiExtractionRun).filter(AiExtractionRun.file_id.in_(file_ids)).delete(synchronize_session=False)
+        self.db.query(PageRegion).filter(PageRegion.file_id.in_(file_ids)).update(
+            {"crop_image_path": None},
+            synchronize_session=False,
+        )
+
+    def _clear_from_full_page_elements(self, file_ids: list[int], task_id: int) -> None:
+        self._clear_from_compare(task_id, file_ids)
+        run_ids = self._ai_run_ids_for_input(file_ids, "full_page")
+        target_run_ids = sorted(
+            set(self._referenced_element_run_ids(file_ids, run_ids))
+            | set(self._failed_ai_run_ids(file_ids, "full_page"))
+        )
+        self._delete_elements_and_runs(target_run_ids)
+
+    def _clear_from_region_elements(self, file_ids: list[int], task_id: int) -> None:
+        self._clear_from_compare(task_id, file_ids)
+        self._delete_elements_and_runs(self._ai_run_ids_for_input(file_ids, "region"))
+
+    def _clear_from_compare(self, task_id: int, file_ids: list[int]) -> None:
+        self.db.query(CompareDiff).filter(CompareDiff.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(ElementMatch).filter(ElementMatch.compare_task_id == task_id).delete(synchronize_session=False)
+        self.db.query(AiExtractionRun).filter(
+            AiExtractionRun.file_id.in_(file_ids),
+            AiExtractionRun.input_type == "merge",
+        ).delete(synchronize_session=False)
+
+    def _ai_run_ids_for_input(self, file_ids: list[int], input_type: str) -> list[int]:
+        return [
+            run_id for (run_id,) in self.db.query(AiExtractionRun.id)
+            .filter(AiExtractionRun.file_id.in_(file_ids), AiExtractionRun.input_type == input_type)
+            .all()
+        ]
+
+    def _failed_ai_run_ids(self, file_ids: list[int], input_type: str) -> list[int]:
+        return [
+            run_id for (run_id,) in self.db.query(AiExtractionRun.id)
+            .filter(
+                AiExtractionRun.file_id.in_(file_ids),
+                AiExtractionRun.input_type == input_type,
+                AiExtractionRun.status == "failed",
+            )
+            .all()
+        ]
+
+    def _referenced_element_run_ids(self, file_ids: list[int], run_ids: list[int]) -> list[int]:
+        if not run_ids:
+            return []
+        return [
+            run_id for (run_id,) in self.db.query(DrawingElement.extraction_run_id)
+            .filter(
+                DrawingElement.file_id.in_(file_ids),
+                DrawingElement.extraction_run_id.in_(run_ids),
+            )
+            .distinct()
+            .all()
+            if run_id is not None
+        ]
+
+    def _delete_elements_and_runs(self, run_ids: list[int]) -> None:
+        if not run_ids:
+            return
+        self.db.query(DrawingElement).filter(
+            DrawingElement.extraction_run_id.in_(run_ids)
+        ).delete(synchronize_session=False)
+        self.db.query(AiExtractionRun).filter(
+            AiExtractionRun.id.in_(run_ids)
+        ).delete(synchronize_session=False)
+
+    def _retry_progress_for_status(self, status: str) -> int:
+        return {
+            "queued": 0,
+            "rendered": 25,
+            "regions_detected": 40,
+            "regions_cropped": 55,
+            "extracting_region_elements": 75,
+            "comparing_elements": 90,
+        }.get(status, 0)

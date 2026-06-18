@@ -17,6 +17,7 @@ class PdfFile(Base):
     file_hash = Column(String(128), nullable=False)
     page_count = Column(Integer, nullable=False, default=0)
     file_role = Column(Enum("base", "compare", name="file_role_enum"), nullable=False)
+    file_type = Column(String(16), nullable=False, default="pdf", server_default="pdf")
     status = Column(String(64), nullable=False, default="uploaded")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
