@@ -51,6 +51,9 @@ export default function TaskPickerPage() {
   const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<string | undefined>();
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -58,15 +61,17 @@ export default function TaskPickerPage() {
       const result = await listTasks({
         keyword: keyword.trim() || undefined,
         status,
-        limit: 50,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       });
       setTasks(result.items);
+      setTotal(result.total);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "获取任务列表失败");
     } finally {
       setLoading(false);
     }
-  }, [keyword, status]);
+  }, [keyword, page, pageSize, status]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -122,7 +127,10 @@ export default function TaskPickerPage() {
               placeholder="全部状态"
               style={{ width: 150 }}
               value={status}
-              onChange={setStatus}
+              onChange={(value) => {
+                setStatus(value);
+                setPage(1);
+              }}
               options={[
                 { label: "排队中", value: "queued" },
                 { label: "处理中", value: "extracting_full_page_elements" },
@@ -136,7 +144,10 @@ export default function TaskPickerPage() {
               prefix={<SearchOutlined />}
               placeholder="搜索任务号或文件名"
               value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
+              onChange={(event) => {
+                setKeyword(event.target.value);
+                setPage(1);
+              }}
               onPressEnter={() => void fetchTasks()}
               style={{ width: 260 }}
             />
@@ -147,7 +158,15 @@ export default function TaskPickerPage() {
           columns={columns}
           dataSource={tasks}
           loading={loading}
-          pagination={{ pageSize: 10 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            onChange: (nextPage, nextPageSize) => {
+              setPage(nextPage);
+              setPageSize(nextPageSize);
+            },
+          }}
         />
       </Card>
     </Space>

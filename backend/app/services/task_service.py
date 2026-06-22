@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 import datetime
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -171,6 +172,10 @@ class TaskService:
     # ─── Step 2: Detect Regions ───
     def detect_regions(self, task: CompareTask) -> None:
         self._set_status(task, "detecting_regions", 30)
+        return self._detect_regions_concurrent(task)
+
+    # Detect region AI calls run concurrently; DB writes stay on the main thread.
+    def _detect_regions_concurrent(self, task: CompareTask) -> None:
         provider = self._get_provider()
         pages = self.db.query(PdfPage).filter(
             PdfPage.file_id.in_([task.base_file_id, task.compare_file_id])
@@ -188,11 +193,14 @@ class TaskService:
         ]
         self.db.commit()
 
-        for page in page_sources:
-            started_at = datetime.datetime.now()
+        for job in self._run_detect_layout_jobs(provider, page_sources):
+            page = job["page"]
+            started_at = job["started_at"]
+            finished_at = job["finished_at"]
             try:
-                layout = provider.detect_layout(page["page_no"], page["width"], page["height"], page["image_path"])
-                finished_at = datetime.datetime.now()
+                if job["error"] is not None:
+                    raise job["error"]
+                layout = job["result"]
                 run = self._build_ai_run(
                     provider=provider,
                     file_id=page["file_id"],
@@ -208,13 +216,16 @@ class TaskService:
 
                 for reg in layout["regions"]:
                     self.db.add(PageRegion(
-                        file_id=page["file_id"], page_id=page["id"], page_no=page["page_no"],
-                        region_type=reg["region_type"], region_name=reg["region_name"],
-                        bbox_json=reg["bbox"], ai_reason=reg["reason"],
+                        file_id=page["file_id"],
+                        page_id=page["id"],
+                        page_no=page["page_no"],
+                        region_type=reg["region_type"],
+                        region_name=reg["region_name"],
+                        bbox_json=reg["bbox"],
+                        ai_reason=reg["reason"],
                     ))
-            except Exception as e:
-                finished_at = datetime.datetime.now()
-                formatted_error = classify_ai_error(e)
+            except Exception as exc:
+                formatted_error = classify_ai_error(exc)
                 self.db.rollback()
                 self.db.add(self._build_ai_run(
                     provider=provider,
@@ -228,12 +239,56 @@ class TaskService:
                     error_message=formatted_error,
                 ))
                 self.db.commit()
-                return self._fail(task, f"布局检测失败: {formatted_error}")
+                return self._fail(task, f"layout detection failed: {formatted_error}")
 
         self.db.commit()
         self._set_status(task, "regions_detected", 40)
 
-    # ─── Step 3: Crop Regions ───
+    def _run_detect_layout_jobs(
+        self, provider: VisionModelProvider, pages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not pages:
+            return []
+        max_workers = min(self._ai_max_concurrent_calls_per_task(), len(pages))
+        if max_workers <= 1:
+            return [self._call_detect_layout(provider, page, index) for index, page in enumerate(pages)]
+
+        jobs: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(self._call_detect_layout, provider, page, index)
+                for index, page in enumerate(pages)
+            ]
+            for future in as_completed(futures):
+                jobs.append(future.result())
+        jobs.sort(key=lambda job: job["index"])
+        return jobs
+
+    def _call_detect_layout(
+        self, provider: VisionModelProvider, page: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        started_at = datetime.datetime.now()
+        try:
+            result = provider.detect_layout(page["page_no"], page["width"], page["height"], page["image_path"])
+            return {
+                "index": index,
+                "page": page,
+                "result": result,
+                "error": None,
+                "started_at": started_at,
+                "finished_at": datetime.datetime.now(),
+            }
+        except Exception as exc:
+            return {
+                "index": index,
+                "page": page,
+                "result": None,
+                "error": exc,
+                "started_at": started_at,
+                "finished_at": datetime.datetime.now(),
+            }
+
+    # Step 3: Crop Regions
     def crop_regions(self, task: CompareTask) -> None:
         self._set_status(task, "cropping_regions", 45)
         cropper = CropService(padding_ratio=self.settings.CROP_PADDING_RATIO)
@@ -265,7 +320,7 @@ class TaskService:
         if not self.settings.AI_ENABLE_FULL_PAGE_EXTRACTION:
             self._set_status(task, "full_page_elements_skipped", 70)
             return
-        self._extract_elements_for_task(task, context="full_page", use_pages=True)
+        self._extract_elements_for_task_concurrent(task, context="full_page", use_pages=True)
 
     # ─── Step 5: Extract Region Elements ───
     def extract_region_elements(self, task: CompareTask) -> None:
@@ -273,9 +328,9 @@ class TaskService:
         if not self.settings.AI_ENABLE_REGION_EXTRACTION:
             self._set_status(task, "region_elements_skipped", 80)
             return
-        self._extract_elements_for_task(task, context="region", use_regions=True)
+        self._extract_elements_for_task_concurrent(task, context="region", use_regions=True)
 
-    def _extract_elements_for_task(
+    def _extract_elements_for_task_concurrent(
         self, task: CompareTask, context: str, use_pages: bool = False, use_regions: bool = False
     ) -> None:
         provider = self._get_provider()
@@ -286,14 +341,15 @@ class TaskService:
         ]
         errors: list[str] = []
         file_element_counts = {file_info["id"]: 0 for file_info in file_infos}
-        source_count = 0
+        sources: list[dict[str, Any]] = []
 
         for file_info in file_infos:
-            sources = []
             if use_pages:
                 pages = self.db.query(PdfPage).filter(PdfPage.file_id == file_info["id"]).all()
                 for page in pages:
                     sources.append({
+                        "file_id": file_info["id"],
+                        "original_name": file_info["original_name"],
                         "region_type": "full_page",
                         "region_name": None,
                         "image_path": page.image_path,
@@ -306,96 +362,163 @@ class TaskService:
                 ).all()
                 for region in regions:
                     sources.append({
+                        "file_id": file_info["id"],
+                        "original_name": file_info["original_name"],
                         "region_type": region.region_type,
                         "region_name": region.region_name,
                         "image_path": region.crop_image_path,
                         "page_id": region.page_id,
                         "region_id": region.id,
                     })
-            self.db.commit()
+        self.db.commit()
 
-            for source in sources:
-                source_count += 1
-                region_type = source["region_type"]
-                region_name = source["region_name"]
-                img_path = source["image_path"]
-                started_at = datetime.datetime.now()
-                try:
-                    result = provider.extract_elements(img_path, context, region_type)
-                    finished_at = datetime.datetime.now()
-                    duration_ms = int((finished_at - started_at).total_seconds() * 1000)
-                    elements = result.get("elements") if isinstance(result, dict) else None
-                    if not isinstance(elements, list):
-                        raise ValueError("AI返回缺少 elements 数组")
-                    if not elements:
-                        raise ValueError("AI未识别到任何元素")
-
-                    run = AiExtractionRun(
-                        file_id=file_info["id"], page_id=source["page_id"], region_id=source["region_id"],
-                        model_name=getattr(provider, "_model", "mock_extract"), prompt_version="v1",
-                        input_type=context, status="success",
-                        started_at=started_at, finished_at=finished_at,
-                        duration_ms=duration_ms, attempt_count=1,
-                    )
-                    self.db.add(run)
-                    self.db.flush()
-
-                    added_count = 0
-                    for elem_data in elements:
-                        if not isinstance(elem_data, dict):
-                            raise ValueError("AI返回的元素不是对象")
-                        category = elem_data.get("category")
-                        element_name = elem_data.get("element_name")
-                        if not category or not element_name:
-                            raise ValueError("AI返回的元素缺少 category 或 element_name")
-                        importance = elem_data.get("importance", "medium")
-                        if importance not in {"high", "medium", "low"}:
-                            importance = "medium"
-                        self.db.add(DrawingElement(
-                            file_id=file_info["id"], page_id=source["page_id"], region_id=source["region_id"],
-                            extraction_run_id=run.id,
-                            category=category, element_name=element_name,
-                            raw_value=elem_data.get("raw_value", ""),
-                            normalized_value=elem_data.get("normalized_value", ""),
-                            unit=elem_data.get("unit", ""),
-                            importance=importance,
-                            confidence=elem_data.get("confidence"),
-                            need_manual_check=elem_data.get("need_manual_check", False),
-                            source_image_path=img_path,
-                            region_desc=f"{region_name or ''}" if region_name else "",
-                        ))
-                        added_count += 1
-                    self.db.commit()
-                    file_element_counts[file_info["id"]] += added_count
-                except Exception as exc:
-                    finished_at = datetime.datetime.now()
-                    duration_ms = int((finished_at - started_at).total_seconds() * 1000)
-                    formatted_error = classify_ai_error(exc)
-                    self.db.rollback()
-                    self.db.add(AiExtractionRun(
-                        file_id=file_info["id"], page_id=source["page_id"], region_id=source["region_id"],
-                        model_name=getattr(provider, "_model", "mock_extract"), prompt_version="v1",
-                        input_type=context, status="failed",
-                        error_message=formatted_error,
-                        started_at=started_at, finished_at=finished_at,
-                        duration_ms=duration_ms, attempt_count=1,
-                    ))
-                    self.db.commit()
-                    source_name = Path(img_path).name if img_path else "unknown"
-                    errors.append(f"{file_info['original_name']}/{source_name}: {formatted_error}")
-
-        if source_count == 0:
-            self._fail(task, f"{context}元素识别失败: 没有可识别的图像源")
+        if not sources:
+            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: \u6ca1\u6709\u53ef\u8bc6\u522b\u7684\u56fe\u50cf\u6e90")
             return
+
+        for job in self._run_extract_element_jobs(provider, context, sources):
+            source = job["source"]
+            img_path = source["image_path"]
+            started_at = job["started_at"]
+            finished_at = job["finished_at"]
+            duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+            try:
+                if job["error"] is not None:
+                    raise job["error"]
+                result = job["result"]
+                elements = result.get("elements") if isinstance(result, dict) else None
+                if not isinstance(elements, list):
+                    raise ValueError("AI\u8fd4\u56de\u7f3a\u5c11 elements \u6570\u7ec4")
+                if not elements:
+                    raise ValueError("AI鏈瘑鍒埌浠讳綍鍏冪礌")
+
+                run = AiExtractionRun(
+                    file_id=source["file_id"],
+                    page_id=source["page_id"],
+                    region_id=source["region_id"],
+                    model_name=getattr(provider, "_model", "mock_extract"),
+                    prompt_version="v1",
+                    input_type=context,
+                    status="success",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=duration_ms,
+                    attempt_count=1,
+                )
+                self.db.add(run)
+                self.db.flush()
+
+                added_count = 0
+                for elem_data in elements:
+                    if not isinstance(elem_data, dict):
+                        raise ValueError("AI\u8fd4\u56de\u7684\u5143\u7d20\u4e0d\u662f\u5bf9\u8c61")
+                    category = elem_data.get("category")
+                    element_name = elem_data.get("element_name")
+                    if not category or not element_name:
+                        raise ValueError("AI杩斿洖鐨勫厓绱犵己灏?category 鎴?element_name")
+                    importance = elem_data.get("importance", "medium")
+                    if importance not in {"high", "medium", "low"}:
+                        importance = "medium"
+                    self.db.add(DrawingElement(
+                        file_id=source["file_id"],
+                        page_id=source["page_id"],
+                        region_id=source["region_id"],
+                        extraction_run_id=run.id,
+                        category=category,
+                        element_name=element_name,
+                        raw_value=elem_data.get("raw_value", ""),
+                        normalized_value=elem_data.get("normalized_value", ""),
+                        unit=elem_data.get("unit", ""),
+                        importance=importance,
+                        confidence=elem_data.get("confidence"),
+                        need_manual_check=elem_data.get("need_manual_check", False),
+                        source_image_path=img_path,
+                        region_desc=f"{source['region_name'] or ''}" if source["region_name"] else "",
+                    ))
+                    added_count += 1
+                self.db.commit()
+                file_element_counts[source["file_id"]] += added_count
+            except Exception as exc:
+                formatted_error = classify_ai_error(exc)
+                self.db.rollback()
+                self.db.add(AiExtractionRun(
+                    file_id=source["file_id"],
+                    page_id=source["page_id"],
+                    region_id=source["region_id"],
+                    model_name=getattr(provider, "_model", "mock_extract"),
+                    prompt_version="v1",
+                    input_type=context,
+                    status="failed",
+                    error_message=formatted_error,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=duration_ms,
+                    attempt_count=1,
+                ))
+                self.db.commit()
+                source_name = Path(img_path).name if img_path else "unknown"
+                errors.append(f"{source['original_name']}/{source_name}: {formatted_error}")
+
         if errors:
-            self._fail(task, f"{context}元素识别失败: {'; '.join(errors[:3])}")
+            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: {'; '.join(errors[:3])}")
             return
         missing_files = [
             file_info["original_name"] for file_info in file_infos
             if file_element_counts.get(file_info["id"], 0) == 0
         ]
         if missing_files:
-            self._fail(task, f"{context}元素识别失败: {', '.join(missing_files)} 未提取到元素")
+            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: {', '.join(missing_files)} \u672a\u63d0\u53d6\u5230\u5143\u7d20")
+
+    def _run_extract_element_jobs(
+        self, provider: VisionModelProvider, context: str, sources: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not sources:
+            return []
+        max_workers = min(self._ai_max_concurrent_calls_per_task(), len(sources))
+        if max_workers <= 1:
+            return [self._call_extract_elements(provider, context, source, index) for index, source in enumerate(sources)]
+
+        jobs: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(self._call_extract_elements, provider, context, source, index)
+                for index, source in enumerate(sources)
+            ]
+            for future in as_completed(futures):
+                jobs.append(future.result())
+        jobs.sort(key=lambda job: job["index"])
+        return jobs
+
+    def _call_extract_elements(
+        self, provider: VisionModelProvider, context: str, source: dict[str, Any], index: int
+    ) -> dict[str, Any]:
+        started_at = datetime.datetime.now()
+        try:
+            result = provider.extract_elements(source["image_path"], context, source["region_type"])
+            return {
+                "index": index,
+                "source": source,
+                "result": result,
+                "error": None,
+                "started_at": started_at,
+                "finished_at": datetime.datetime.now(),
+            }
+        except Exception as exc:
+            return {
+                "index": index,
+                "source": source,
+                "result": None,
+                "error": exc,
+                "started_at": started_at,
+                "finished_at": datetime.datetime.now(),
+            }
+
+    def _ai_max_concurrent_calls_per_task(self) -> int:
+        value = getattr(self.settings, "AI_MAX_CONCURRENT_CALLS_PER_TASK", 1)
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 1
 
     # ─── Step 6: Merge & Save Elements ───
     def merge_elements(self, task: CompareTask) -> None:

@@ -76,6 +76,8 @@ export default function DashboardPage() {
   const [status, setStatus] = useState<string | undefined>();
   const [keyword, setKeyword] = useState("");
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(12);
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -83,8 +85,8 @@ export default function DashboardPage() {
       const result = await listTasks({
         status,
         keyword: keyword.trim() || undefined,
-        limit: 50,
-        offset: 0,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       });
       setTasks(result.items);
       setTotal(result.total);
@@ -93,7 +95,7 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [keyword, status]);
+  }, [keyword, page, pageSize, status]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -261,7 +263,10 @@ export default function DashboardPage() {
             placeholder="全部状态"
             style={{ width: 150 }}
             value={status}
-            onChange={setStatus}
+            onChange={(value) => {
+              setStatus(value);
+              setPage(1);
+            }}
             options={[
               { label: "排队中", value: "queued" },
               { label: "处理中", value: "extracting_full_page_elements" },
@@ -275,7 +280,10 @@ export default function DashboardPage() {
             prefix={<SearchOutlined />}
             placeholder="搜索任务号或文件名"
             value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
+            onChange={(event) => {
+              setKeyword(event.target.value);
+              setPage(1);
+            }}
             onPressEnter={() => void fetchTasks()}
             style={{ width: 260 }}
           />
@@ -290,7 +298,16 @@ export default function DashboardPage() {
         columns={columns}
         dataSource={tasks}
         loading={loading}
-        pagination={{ pageSize: 12, showSizeChanger: true }}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          showSizeChanger: true,
+          onChange: (nextPage, nextPageSize) => {
+            setPage(nextPage);
+            setPageSize(nextPageSize);
+          },
+        }}
         scroll={{ x: 1480 }}
         size="middle"
       />

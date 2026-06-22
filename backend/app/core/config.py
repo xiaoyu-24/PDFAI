@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     AI_MODEL: str = "replace-with-vision-model"
     AI_TIMEOUT_SECONDS: int = Field(default=120, ge=10)
     AI_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
+    AI_MAX_CONCURRENT_CALLS_PER_TASK: int = Field(default=2, ge=1, le=8)
     AI_ENABLE_FULL_PAGE_EXTRACTION: bool = True
     AI_ENABLE_REGION_EXTRACTION: bool = False
     AI_IMAGE_MAX_EDGE: int = Field(default=1600, ge=512, le=8000)

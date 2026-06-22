@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test:navigation": "node scripts/check-navigation-regressions.mjs",
+    "test:pagination": "node scripts/check-server-pagination.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
