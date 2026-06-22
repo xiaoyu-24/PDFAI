@@ -123,7 +123,11 @@ def _recover_active_tasks() -> None:
         except OperationalError as exc:
             if _is_missing_column_error(exc):
                 raise RuntimeError(
-                    "数据库表结构未升级，请在 backend 目录执行 alembic upgrade head 后重新启动后端。"
+                    "数据库表结构未升级。\n"
+                    "请执行：\n"
+                    "cd D:\\projects\\PDFAI\\backend\n"
+                    ".\\.venv\\Scripts\\python.exe -m alembic upgrade head\n"
+                    "然后重新启动后端。"
                 ) from exc
             raise
         for task in tasks:
