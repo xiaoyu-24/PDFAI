@@ -31,6 +31,7 @@ Assert-Contains $publishScript "git add -f frontend/dist" "publish script must f
 Assert-Contains $publishScript "deploy-prod" "publish script must target deploy-prod"
 Assert-Contains $publishScript "npm run test:navigation" "publish script must run frontend navigation checks"
 Assert-Contains $publishScript "pytest" "publish script must run backend pytest"
+Assert-Contains $publishScript "Skipping remote pull" "publish script must skip remote pull when deploy-prod does not exist yet"
 
 Assert-Contains $serverScript "git pull --ff-only origin deploy-prod" "server update script must pull deploy-prod without rewriting local private files"
 Assert-Contains $serverScript "alembic upgrade head" "server update script must apply migrations"

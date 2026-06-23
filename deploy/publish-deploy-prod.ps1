@@ -90,11 +90,11 @@ try {
     Run-Git fetch $GitHubRemoteName
 
     $localBranchExists = (& git -C $repoRoot branch --list $DeployBranch)
+    $remoteBranchExists = (& git -C $repoRoot branch -r --list "$GitHubRemoteName/$DeployBranch")
     if ($localBranchExists) {
         Run-Git worktree add $worktreePath $DeployBranch
     }
     else {
-        $remoteBranchExists = (& git -C $repoRoot branch -r --list "$GitHubRemoteName/$DeployBranch")
         if ($remoteBranchExists) {
             Run-Git worktree add -b $DeployBranch $worktreePath "$GitHubRemoteName/$DeployBranch"
         }
@@ -103,9 +103,14 @@ try {
         }
     }
 
-    & git -C $worktreePath pull --ff-only $GitHubRemoteName $DeployBranch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "No remote $DeployBranch to fast-forward, continuing with local deploy branch."
+    if ($remoteBranchExists) {
+        & git -C $worktreePath pull --ff-only $GitHubRemoteName $DeployBranch
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to fast-forward $DeployBranch from $GitHubRemoteName"
+        }
+    }
+    else {
+        Write-Host "Skipping remote pull because $GitHubRemoteName/$DeployBranch does not exist yet."
     }
 
     & git -C $worktreePath merge --no-edit $sourceRef
