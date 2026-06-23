@@ -26,9 +26,17 @@ import {
   ReloadOutlined,
   TableOutlined,
 } from "@ant-design/icons";
-import { deleteTask, getExportUrl, getTask, pauseTask, resumeTask, retryTask } from "../api/tasks";
+import {
+  deleteTask,
+  getExportUrl,
+  getTask,
+  getTaskReportTable,
+  pauseTask,
+  resumeTask,
+  retryTask,
+} from "../api/tasks";
 import PageBackButton from "../components/PageBackButton";
-import type { CompareTask } from "../types";
+import type { CompareTask, ReportTableRow } from "../types";
 
 const { Text } = Typography;
 
@@ -105,6 +113,10 @@ export default function TaskProgressPage() {
   const parsedTaskId = taskId ? Number(taskId) : NaN;
   const invalidId = Boolean(taskId) && !Number.isFinite(parsedTaskId);
   const [task, setTask] = useState<CompareTask | null>(null);
+  const [reportRows, setReportRows] = useState<ReportTableRow[]>([]);
+  const [reportTaskId, setReportTaskId] = useState<number | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const fetchTask = useCallback(async () => {
@@ -131,6 +143,47 @@ export default function TaskProgressPage() {
   }, [fetchTask, task?.status]);
 
   const currentStage = useMemo(() => (task ? getCurrentStage(task) : 0), [task]);
+  const completedTaskId = task?.status === "completed" ? task.id : null;
+
+  useEffect(() => {
+    if (!completedTaskId) {
+      return;
+    }
+
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setReportLoading(true);
+      setReportError(null);
+
+      getTaskReportTable(completedTaskId)
+        .then((report) => {
+          if (cancelled) return;
+          setReportTaskId(completedTaskId);
+          setReportRows(report.rows);
+        })
+        .catch((reportFetchError) => {
+          if (cancelled) return;
+          setReportTaskId(completedTaskId);
+          setReportRows([]);
+          setReportError(reportFetchError instanceof Error ? reportFetchError.message : "获取差异结论失败");
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setReportLoading(false);
+          }
+        });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [completedTaskId]);
+
+  const conclusionRows = useMemo(
+    () => (reportTaskId === task?.id ? reportRows.filter((row) => row.conclusion.trim()) : []),
+    [reportRows, reportTaskId, task?.id]
+  );
 
   const handlePause = async () => {
     if (!task) return;
@@ -249,8 +302,8 @@ export default function TaskProgressPage() {
           className="task-steps"
         />
       </Card>
-      <Row gutter={16}>
-        <Col xs={24} lg={14}>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={8}>
           <Card title="当前状态" className="work-card">
             <Alert
               type={failed ? "error" : completed ? "success" : paused ? "warning" : "info"}
@@ -289,33 +342,72 @@ export default function TaskProgressPage() {
             </Descriptions>
           </Card>
         </Col>
-        <Col xs={24} lg={10}>
-          <Card title="下一步" className="work-card">
-            {completed ? (
-              <Space direction="vertical" style={{ width: "100%" }}>
-                <Link to={`/tasks/${task.id}/diffs`}>
-                  <Button block type="primary" icon={<FileSearchOutlined />}>查看差异报告</Button>
-                </Link>
-                <Link to={`/tasks/${task.id}/elements`}>
-                  <Button block icon={<TableOutlined />}>查看元素清单</Button>
-                </Link>
-                <Button block icon={<DownloadOutlined />} onClick={() => window.open(getExportUrl(task.id, "final"))}>
-                  导出审核总结
-                </Button>
-              </Space>
-            ) : failed ? (
-              <Space direction="vertical" style={{ width: "100%" }}>
-                <Button block type="primary" icon={<ReloadOutlined />} onClick={() => void handleRetry()}>
-                  重试此任务
-                </Button>
-                <Link to="/tasks/new"><Button block>重新创建任务</Button></Link>
-                <Link to="/settings"><Button block>查看系统设置</Button></Link>
-              </Space>
-            ) : paused ? (
-              <Text type="secondary">任务已暂停。点击“继续”后会重新进入队列，系统最多同时运行 3 个任务。</Text>
-            ) : (
-              <Text type="secondary">任务处理中，页面会自动刷新。上传新任务不会阻塞当前任务。</Text>
-            )}
+        <Col xs={24} lg={16}>
+          <Card
+            title="结论/差异/原因"
+            className="work-card"
+            extra={
+              <div className="task-action-buttons">
+                {completed ? (
+                  <>
+                    <Link to={`/tasks/${task.id}/diffs`}>
+                      <Button type="primary" icon={<FileSearchOutlined />}>查看差异报告</Button>
+                    </Link>
+                    <Link to={`/tasks/${task.id}/elements`}>
+                      <Button icon={<TableOutlined />}>查看元素清单</Button>
+                    </Link>
+                    <Button icon={<DownloadOutlined />} onClick={() => window.open(getExportUrl(task.id, "final"))}>
+                      导出审核总结
+                    </Button>
+                  </>
+                ) : failed ? (
+                  <>
+                    <Button type="primary" icon={<ReloadOutlined />} onClick={() => void handleRetry()}>
+                      重试此任务
+                    </Button>
+                    <Link to="/tasks/new"><Button>重新创建任务</Button></Link>
+                    <Link to="/settings"><Button>查看系统设置</Button></Link>
+                  </>
+                ) : null}
+              </div>
+            }
+          >
+            <div className="conclusion-list">
+              {completed ? (
+                reportLoading ? (
+                  <Spin tip="加载差异结论..." />
+                ) : reportError ? (
+                  <Alert type="warning" showIcon message={reportError} />
+                ) : conclusionRows.length > 0 ? (
+                  conclusionRows.map((row) => (
+                    <div className="conclusion-item" key={row.diff_id}>
+                      <Space size={8} wrap>
+                        <Tag color={row.risk_label === "高" ? "red" : row.risk_label === "中" ? "orange" : "blue"}>
+                          {row.risk_label || "差异"}
+                        </Tag>
+                        <Text type="secondary">
+                          {row.section} #{row.section_index}
+                        </Text>
+                      </Space>
+                      <div className="conclusion-text">{row.conclusion}</div>
+                    </div>
+                  ))
+                ) : (
+                  <Text type="secondary">暂无差异结论。</Text>
+                )
+              ) : failed ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={task.current_step_label || "任务失败"}
+                  description={task.error_hint || task.last_error || task.summary}
+                />
+              ) : paused ? (
+                <Text type="secondary">任务已暂停。点击“继续”后会重新进入队列。</Text>
+              ) : (
+                <Text type="secondary">任务完成后将在这里展示差异报告中的结论/差异/原因。</Text>
+              )}
+            </div>
           </Card>
         </Col>
       </Row>
