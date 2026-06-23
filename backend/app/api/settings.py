@@ -23,6 +23,7 @@ class RecognitionStrategyResponse(BaseModel):
 
 class SettingsResponse(BaseModel):
     app_env: str
+    task_max_workers: int
     ai_base_url: str
     ai_model: str
     has_ai_api_key: bool
@@ -82,6 +83,7 @@ def get_public_settings() -> SettingsResponse:
     settings = get_settings()
     return SettingsResponse(
         app_env=settings.APP_ENV,
+        task_max_workers=settings.TASK_MAX_WORKERS,
         ai_base_url=settings.AI_BASE_URL,
         ai_model=settings.AI_MODEL,
         has_ai_api_key=bool(settings.AI_API_KEY.strip()),
@@ -133,6 +135,7 @@ def update_settings(request: UpdateSettingsRequest) -> SettingsResponse:
 
     return SettingsResponse(
         app_env=settings.APP_ENV,
+        task_max_workers=settings.TASK_MAX_WORKERS,
         ai_base_url=settings.AI_BASE_URL,
         ai_model=settings.AI_MODEL,
         has_ai_api_key=bool(settings.AI_API_KEY.strip()),

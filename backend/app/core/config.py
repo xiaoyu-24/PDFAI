@@ -9,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_ENV: str = "development"
+    CORS_ORIGINS: str = ""
+    TASK_MAX_WORKERS: int = Field(default=2, ge=1, le=3)
     DATABASE_URL: str = "mysql+pymysql://pdfai:password@localhost:3306/pdfai"
     TEST_DATABASE_URL: str = "sqlite:///./test_pdfai.db"
     STORAGE_ROOT: str = "../storage"
@@ -52,6 +54,16 @@ class Settings(BaseSettings):
 
     def get_storage_path(self, subdir: str) -> Path:
         return self.storage_root_path / subdir
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        default_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+        configured_origins = [
+            origin.strip()
+            for origin in self.CORS_ORIGINS.split(",")
+            if origin.strip()
+        ]
+        return list(dict.fromkeys([*default_origins, *configured_origins]))
 
 
 @lru_cache()

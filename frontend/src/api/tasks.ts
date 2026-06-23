@@ -1,4 +1,4 @@
-import apiClient from "./client";
+import apiClient, { buildApiUrl } from "./client";
 import type {
   CompareTask,
   DrawingElement,
@@ -143,5 +143,5 @@ export function getExportUrl(
   taskId: number,
   type: "diffs" | "elements" | "final"
 ): string {
-  return `/api/tasks/${taskId}/exports/${type}`;
+  return buildApiUrl(`/tasks/${taskId}/exports/${type}`);
 }

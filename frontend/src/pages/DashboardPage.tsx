@@ -11,7 +11,7 @@ import {
   SearchOutlined,
 } from "@ant-design/icons";
 import { Link } from "react-router-dom";
-import { deleteTask, getExportUrl, listTasks, pauseTask, resumeTask, retryTask } from "../api/tasks";
+import { deleteTask, getExportUrl, getSettings, listTasks, pauseTask, resumeTask, retryTask } from "../api/tasks";
 import type { TaskListItem } from "../types";
 
 const { Text } = Typography;
@@ -78,6 +78,7 @@ export default function DashboardPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
+  const [taskMaxWorkers, setTaskMaxWorkers] = useState(2);
 
   const fetchTasks = useCallback(async () => {
     setLoading(true);
@@ -102,6 +103,17 @@ export default function DashboardPage() {
       void fetchTasks();
     });
   }, [fetchTasks]);
+
+  useEffect(() => {
+    queueMicrotask(async () => {
+      try {
+        const settings = await getSettings();
+        setTaskMaxWorkers(settings.task_max_workers);
+      } catch {
+        setTaskMaxWorkers(2);
+      }
+    });
+  }, []);
 
   const handlePause = useCallback(async (taskId: number) => {
     try {
@@ -291,7 +303,7 @@ export default function DashboardPage() {
             刷新
           </Button>
         </Space>
-        <Text type="secondary">共 {total} 个任务，最多同时运行 3 个</Text>
+        <Text type="secondary">共 {total} 个任务，最多同时运行 {taskMaxWorkers} 个</Text>
       </div>
       <Table
         rowKey="id"

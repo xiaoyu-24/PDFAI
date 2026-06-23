@@ -1,7 +1,20 @@
 import axios from "axios";
 
+const DEFAULT_API_BASE_URL = "/api";
+
+export function getApiBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL?.trim();
+  const baseUrl = configured || DEFAULT_API_BASE_URL;
+  return baseUrl.replace(/\/+$/, "") || DEFAULT_API_BASE_URL;
+}
+
+export function buildApiUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${getApiBaseUrl()}${normalizedPath}`;
+}
+
 const apiClient = axios.create({
-  baseURL: "/api",
+  baseURL: getApiBaseUrl(),
   timeout: 30000,
 });
 

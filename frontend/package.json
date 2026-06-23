@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:api-base-url": "node scripts/check-api-base-url.mjs",
+    "test:dashboard-worker-limit": "node scripts/check-dashboard-worker-limit.mjs",
     "test:navigation": "node scripts/check-navigation-regressions.mjs",
     "test:pagination": "node scripts/check-server-pagination.mjs",
     "preview": "vite preview"

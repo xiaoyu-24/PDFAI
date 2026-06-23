@@ -57,7 +57,7 @@ def _run_full_pipeline(task_id: int) -> None:
 
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-task_runner = TaskRunner(_run_full_pipeline, max_workers=3)
+task_runner = TaskRunner(_run_full_pipeline, max_workers=get_settings().TASK_MAX_WORKERS)
 
 ALLOWED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -518,10 +518,15 @@ def export_final(task_id: int, db: Session = Depends(get_db)):
 
 
 def _task_to_response(task) -> TaskResponse:
+    settings = get_settings()
     label, hint = STEP_INFO.get(task.status, (task.status, None))
+    if task.status == "queued":
+        hint = (
+            "系统会在并发名额可用时自动开始处理，"
+            f"最多同时运行 {settings.TASK_MAX_WORKERS} 个任务。"
+        )
     observability = _task_observability(task)
     failed_stage = task.failed_stage if task.status == "failed" else None
-    settings = get_settings()
     return TaskResponse(
         id=task.id, task_no=task.task_no,
         base_file_id=task.base_file_id, compare_file_id=task.compare_file_id,

@@ -191,6 +191,7 @@ export interface RecognitionStrategy {
 
 export interface PublicSettings {
   app_env: string;
+  task_max_workers: number;
   ai_base_url: string;
   ai_model: string;
   has_ai_api_key: boolean;
