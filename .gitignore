@@ -81,3 +81,7 @@ logs/
 # ===== 开发期文档（仅本地使用）=====
 *计划*.md
 *实施计划*.md
+
+# ===== Local-only deployment/collaboration notes =====
+/AGENTS.md
+/deploy/github-deploy.md

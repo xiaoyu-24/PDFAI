@@ -145,6 +145,28 @@ assert(
   "DiffReportPage must place evidence/check area to the right of manual confirmation"
 );
 
+const taskProgressSource = read("src/pages/TaskProgressPage.tsx");
+assert(
+  taskProgressSource.includes("getTaskReportTable") &&
+    taskProgressSource.includes("reportRows") &&
+    taskProgressSource.includes("task-action-buttons"),
+  "TaskProgressPage must load report-table conclusions and render header actions"
+);
+assert(
+  taskProgressSource.includes('title="结论/差异/原因"') &&
+    taskProgressSource.includes("extra={") &&
+    !taskProgressSource.includes('title="下一步"'),
+  "TaskProgressPage must replace the next-step card with a conclusion card that has header actions"
+);
+assert(
+  taskProgressSource.includes("lg={8}") && taskProgressSource.includes("lg={16}"),
+  "TaskProgressPage must narrow current status and widen the conclusion/actions area"
+);
+assert(
+  !taskProgressSource.includes('<Button block type="primary" icon={<FileSearchOutlined />}>查看差异报告</Button>'),
+  "TaskProgressPage action buttons must not keep the old full-width button layout"
+);
+
 const appCss = read("src/App.css");
 const elementsPageSource = read("src/pages/ElementsPage.tsx");
 assert(

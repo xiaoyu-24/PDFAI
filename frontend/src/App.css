@@ -151,6 +151,44 @@
   margin-top: 24px;
 }
 
+.conclusion-list {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.conclusion-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #edf1f7;
+}
+
+.conclusion-item:first-child {
+  padding-top: 0;
+}
+
+.conclusion-item:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.conclusion-text {
+  margin-top: 8px;
+  color: #1f2937;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.task-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-action-buttons .ant-btn {
+  min-width: 132px;
+}
+
 .muted-line {
   margin-top: 8px;
   color: #667085;
@@ -185,5 +223,19 @@
   .task-summary {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .conclusion-list {
+    max-height: none;
+    padding-right: 0;
+  }
+
+  .task-action-buttons {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+
+  .task-action-buttons .ant-btn {
+    min-width: 120px;
   }
 }
