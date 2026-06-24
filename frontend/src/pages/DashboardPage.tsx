@@ -161,15 +161,22 @@ export default function DashboardPage() {
         title: "任务",
         dataIndex: "task_no",
         key: "task_no",
-        width: 230,
-        render: (_, record) => (
-          <Space direction="vertical" size={0}>
-            <Link to={`/tasks/${record.id}`}>{record.task_no}</Link>
-            <Text type="secondary" ellipsis style={{ maxWidth: 260 }}>
-              {record.base_file_name || "-"} → {record.compare_file_name || "-"}
-            </Text>
-          </Space>
-        ),
+        width: 210,
+        render: (_, record) => <Link to={`/tasks/${record.id}`}>{record.task_no}</Link>,
+      },
+      {
+        title: "基准图纸",
+        dataIndex: "base_file_name",
+        key: "base_file_name",
+        width: 220,
+        render: (value) => <Text className="drawing-file-name">{value || "-"}</Text>,
+      },
+      {
+        title: "对比图纸",
+        dataIndex: "compare_file_name",
+        key: "compare_file_name",
+        width: 220,
+        render: (value) => <Text className="drawing-file-name">{value || "-"}</Text>,
       },
       {
         title: "状态",
@@ -320,7 +327,7 @@ export default function DashboardPage() {
             setPageSize(nextPageSize);
           },
         }}
-        scroll={{ x: 1480 }}
+        scroll={{ x: 1900 }}
         size="middle"
       />
     </Card>
