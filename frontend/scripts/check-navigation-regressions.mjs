@@ -167,6 +167,37 @@ assert(
   "TaskProgressPage action buttons must not keep the old full-width button layout"
 );
 
+const dashboardSource = read("src/pages/DashboardPage.tsx");
+const dashboardColumnsStart = dashboardSource.indexOf("const columns");
+const dashboardColumnsSource = dashboardSource.slice(
+  dashboardColumnsStart,
+  dashboardSource.indexOf("  return (", dashboardColumnsStart)
+);
+assert(
+  dashboardColumnsSource.indexOf('title: "任务"') <
+    dashboardColumnsSource.indexOf('title: "基准图纸"') &&
+    dashboardColumnsSource.indexOf('title: "基准图纸"') <
+      dashboardColumnsSource.indexOf('title: "对比图纸"') &&
+    dashboardColumnsSource.indexOf('title: "对比图纸"') <
+      dashboardColumnsSource.indexOf('title: "状态"'),
+  "DashboardPage must place base and compare drawing columns between task and status"
+);
+assert(
+  dashboardColumnsSource.includes('dataIndex: "base_file_name"') &&
+    dashboardColumnsSource.includes('dataIndex: "compare_file_name"') &&
+    dashboardColumnsSource.includes('className="drawing-file-name"'),
+  "DashboardPage must render base and compare drawing names in dedicated wrapping columns"
+);
+const dashboardTaskColumnSource = dashboardColumnsSource.slice(
+  dashboardColumnsSource.indexOf('title: "任务"'),
+  dashboardColumnsSource.indexOf('title: "基准图纸"')
+);
+assert(
+  !dashboardTaskColumnSource.includes("base_file_name") &&
+    !dashboardTaskColumnSource.includes("compare_file_name"),
+  "DashboardPage task column must show only the task number"
+);
+
 const appCss = read("src/App.css");
 const elementsPageSource = read("src/pages/ElementsPage.tsx");
 assert(
@@ -191,6 +222,12 @@ assert(
     appCss.includes("white-space: normal") &&
     appCss.includes("word-break: break-word"),
   "report table cells must wrap long text in normal and full-screen views"
+);
+assert(
+  appCss.includes(".drawing-file-name") &&
+    appCss.includes("white-space: normal") &&
+    appCss.includes("overflow-wrap: anywhere"),
+  "DashboardPage drawing names must wrap without truncation"
 );
 
 console.log("navigation regression checks passed");

@@ -83,6 +83,12 @@
   margin-bottom: 16px;
 }
 
+.drawing-file-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .report-toolbar {
   align-items: flex-start;
 }
