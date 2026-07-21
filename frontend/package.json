@@ -10,7 +10,9 @@
     "test:api-base-url": "node scripts/check-api-base-url.mjs",
     "test:dashboard-worker-limit": "node scripts/check-dashboard-worker-limit.mjs",
     "test:navigation": "node scripts/check-navigation-regressions.mjs",
+    "test:full-log": "node scripts/check-full-log-rendering.mjs",
     "test:pagination": "node scripts/check-server-pagination.mjs",
+    "test:ai-profiles": "node scripts/check-ai-profiles.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

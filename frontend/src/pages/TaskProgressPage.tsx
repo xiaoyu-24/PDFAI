@@ -10,9 +10,11 @@ import {
   Progress,
   Result,
   Row,
+  Segmented,
   Space,
   Spin,
   Steps,
+  Table,
   Tag,
   Typography,
   message,
@@ -25,6 +27,7 @@ import {
   PlayCircleOutlined,
   ReloadOutlined,
   TableOutlined,
+  FilePdfOutlined,
 } from "@ant-design/icons";
 import {
   deleteTask,
@@ -34,9 +37,12 @@ import {
   pauseTask,
   resumeTask,
   retryTask,
+  getTaskLogs,
 } from "../api/tasks";
 import PageBackButton from "../components/PageBackButton";
-import type { CompareTask, ReportTableRow } from "../types";
+import type { CompareTask, ReportTableRow, TaskLog, LogViewMode, FullLogListResponse } from "../types";
+import { errorCategoryLabel, eventTypeLabel, logLevelLabel, taskStageLabel } from "../utils/logLabels";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Text } = Typography;
 
@@ -107,6 +113,11 @@ function formatDuration(ms: number | undefined) {
   return `${(ms / 1000).toFixed(1)} 秒`;
 }
 
+function formatFullLogValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
+}
+
 export default function TaskProgressPage() {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
@@ -118,6 +129,10 @@ export default function TaskProgressPage() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [taskLogs, setTaskLogs] = useState<TaskLog[]>([]);
+  const [fullLogItems, setFullLogItems] = useState<Record<string, unknown>[]>([]);
+  const [logViewMode, setLogViewMode] = useState<LogViewMode>("timeline");
+  const [fullLogMessage, setFullLogMessage] = useState<string | null>(null);
 
   const fetchTask = useCallback(async () => {
     if (!taskId || invalidId) return;
@@ -134,13 +149,38 @@ export default function TaskProgressPage() {
     queueMicrotask(() => {
       void fetchTask();
     });
-    const timer = window.setInterval(() => {
-      if (task?.status !== "completed" && task?.status !== "failed" && task?.status !== "paused") {
-        void fetchTask();
+  }, [fetchTask]);
+
+  const loadLogs = useCallback(async () => {
+    if (!Number.isFinite(parsedTaskId)) return;
+    try {
+      const response = await getTaskLogs(parsedTaskId, { view: logViewMode, limit: 50 });
+      if ("cursor" in response) {
+        // FullLogListResponse
+        setTaskLogs([]);
+        setFullLogItems((response as FullLogListResponse).items);
+        setFullLogMessage((response as FullLogListResponse).status_message || null);
+      } else if ("items" in response && Array.isArray(response.items)) {
+        setTaskLogs(response.items as TaskLog[]);
+        setFullLogItems([]);
+        setFullLogMessage(null);
+      } else {
+        setTaskLogs([]);
+        setFullLogItems([]);
+        setFullLogMessage(null);
       }
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [fetchTask, task?.status]);
+    } catch {
+      setTaskLogs([]);
+      setFullLogItems([]);
+    }
+  }, [parsedTaskId, logViewMode]);
+
+  useEffect(() => {
+    queueMicrotask(() => void loadLogs());
+  }, [loadLogs]);
+
+  useAutoRefresh(fetchTask, { enabled: Boolean(taskId) && !invalidId });
+  useAutoRefresh(loadLogs, { enabled: Boolean(taskId) && !invalidId });
 
   const currentStage = useMemo(() => (task ? getCurrentStage(task) : 0), [task]);
   const completedTaskId = task?.status === "completed" ? task.id : null;
@@ -344,10 +384,12 @@ export default function TaskProgressPage() {
         </Col>
         <Col xs={24} lg={16}>
           <Card
-            title="结论/差异/原因"
             className="work-card"
             extra={
               <div className="task-action-buttons">
+                <Link to={`/tasks/${task.id}/source-files`}>
+                  <Button icon={<FilePdfOutlined />}>查看原始文件</Button>
+                </Link>
                 {completed ? (
                   <>
                     <Link to={`/tasks/${task.id}/diffs`}>
@@ -411,6 +453,58 @@ export default function TaskProgressPage() {
           </Card>
         </Col>
       </Row>
+      <Card title="执行日志" className="work-card" extra={
+        <Segmented
+          size="small"
+          options={[
+            { value: "timeline", label: "简洁时间线" },
+            { value: "exceptions", label: "仅看异常" },
+            { value: "full", label: "完整日志" },
+          ]}
+          value={logViewMode}
+          onChange={(v) => setLogViewMode(v as LogViewMode)}
+        />
+      }>
+        {logViewMode === "full" && fullLogMessage && (
+          <Alert type="info" showIcon message={fullLogMessage} style={{ marginBottom: 12 }} />
+        )}
+        {logViewMode === "full" && fullLogItems.length > 0 && (
+          <Table<Record<string, unknown>>
+            rowKey={(record, index) => `${formatFullLogValue(record.task_id)}-${formatFullLogValue(record.timestamp)}-${index}`}
+            size="small"
+            pagination={false}
+            dataSource={fullLogItems}
+            columns={[
+              { title: "时间", dataIndex: "timestamp", width: 180, render: (value: unknown) => formatFullLogValue(value) },
+              { title: "任务", dataIndex: "task_no", width: 190, render: (value: unknown) => formatFullLogValue(value) },
+              { title: "阶段", dataIndex: "stage", width: 190, render: (value: unknown) => taskStageLabel(formatFullLogValue(value)) },
+              { title: "事件", dataIndex: "event_type", width: 110, render: (value: unknown) => eventTypeLabel(formatFullLogValue(value)) },
+              { title: "等级", dataIndex: "level", width: 90, render: (value: unknown) => logLevelLabel(formatFullLogValue(value) as TaskLog["level"]) },
+              { title: "消息", dataIndex: "message", ellipsis: true, render: (value: unknown) => formatFullLogValue(value) },
+            ]}
+            scroll={{ x: 980 }}
+          />
+        )}
+        {logViewMode !== "full" && (
+        <Table<TaskLog>
+          rowKey="id"
+          size="small"
+          pagination={false}
+          dataSource={taskLogs}
+          columns={[
+            { title: "时间", dataIndex: "created_at", width: 180, render: (value: string) => new Date(value).toLocaleString() },
+            { title: "阶段", dataIndex: "stage", width: 190, render: taskStageLabel },
+            { title: "事件", dataIndex: "event_type", width: 110, render: eventTypeLabel },
+            { title: "等级", dataIndex: "level", width: 90, render: (value: TaskLog["level"]) => <Tag color={value === "error" ? "red" : value === "warning" ? "orange" : "blue"}>{logLevelLabel(value)}</Tag> },
+            { title: "分类", dataIndex: "error_category", width: 110, render: errorCategoryLabel },
+            { title: "耗时", dataIndex: "response_time_ms", width: 100, render: (value: number | null) => formatDuration(value ?? undefined) },
+            { title: "信息", dataIndex: "message" },
+          ]}
+          scroll={{ x: 980 }}
+          expandable={{ expandedRowRender: (record) => record.error_detail || record.fallback_action || "无更多详情" }}
+        />
+        )}
+      </Card>
     </Space>
   );
 }

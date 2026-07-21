@@ -8,6 +8,8 @@ from .models import (
     ElementMatch,
     CompareDiff,
     ReviewLog,
+    TaskLog,
+    AiProfile,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "ElementMatch",
     "CompareDiff",
     "ReviewLog",
+    "TaskLog",
+    "AiProfile",
 ]

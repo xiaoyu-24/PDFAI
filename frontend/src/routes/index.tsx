@@ -10,6 +10,8 @@ const ElementsPage = lazy(() => import("../pages/ElementsPage"));
 const DiffReportPage = lazy(() => import("../pages/DiffReportPage"));
 const SettingsPage = lazy(() => import("../pages/SettingsPage"));
 const TaskPickerPage = lazy(() => import("../pages/TaskPickerPage"));
+const SystemLogsPage = lazy(() => import("../pages/SystemLogsPage"));
+const SourceFilesPage = lazy(() => import("../pages/SourceFilesPage"));
 
 export default function AppRoutes() {
   return (
@@ -24,6 +26,8 @@ export default function AppRoutes() {
           <Route path="/tasks/:taskId" element={<TaskProgressPage />} />
           <Route path="/tasks/:taskId/elements" element={<ElementsPage />} />
           <Route path="/tasks/:taskId/diffs" element={<DiffReportPage />} />
+          <Route path="/tasks/:taskId/source-files" element={<SourceFilesPage />} />
+          <Route path="/system-logs" element={<SystemLogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

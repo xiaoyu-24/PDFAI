@@ -4,10 +4,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import get_db
+from app.services.ai_profile_service import AiProfileService
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -44,6 +48,48 @@ class UpdateSettingsRequest(BaseModel):
     ai_enable_region_extraction: Optional[bool] = None
     ai_image_max_edge: Optional[int] = Field(default=None, ge=512, le=8000)
     ai_image_jpeg_quality: Optional[int] = Field(default=None, ge=40, le=95)
+
+
+class AiProfileCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    base_url: str = Field(min_length=1, max_length=1024)
+    api_key: str = Field(min_length=1)
+    model: str = Field(min_length=1, max_length=256)
+    timeout_seconds: int = Field(default=120, ge=10)
+    max_retries: int = Field(default=2, ge=0, le=10)
+
+
+class AiProfileUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    base_url: Optional[str] = Field(default=None, min_length=1, max_length=1024)
+    api_key: Optional[str] = None
+    model: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    timeout_seconds: Optional[int] = Field(default=None, ge=10)
+    max_retries: Optional[int] = Field(default=None, ge=0, le=10)
+
+
+class AiProfileResponse(BaseModel):
+    id: int
+    name: str
+    base_url: str
+    model: str
+    timeout_seconds: int
+    max_retries: int
+    has_api_key: bool
+    is_active: bool
+    is_pending: bool
+    is_enabled: bool
+
+
+class AiProfileListResponse(BaseModel):
+    items: list[AiProfileResponse]
+    active_profile_id: Optional[int]
+    pending_profile_id: Optional[int]
+
+
+class AiProfileActivationResponse(BaseModel):
+    activation_status: str
+    profile: AiProfileResponse
 
 
 def _update_env_file(updates: dict[str, str]) -> None:
@@ -150,3 +196,66 @@ def update_settings(request: UpdateSettingsRequest) -> SettingsResponse:
             jpeg_quality=settings.AI_IMAGE_JPEG_QUALITY,
         ),
     )
+
+
+@router.get("/ai-profiles", response_model=AiProfileListResponse)
+def list_ai_profiles(db: Session = Depends(get_db)) -> AiProfileListResponse:
+    service = AiProfileService(db)
+    service.ensure_default_profile()
+    items = [AiProfileResponse(**service.to_public_dict(profile)) for profile in service.list_profiles()]
+    active = next((item.id for item in items if item.is_active), None)
+    pending = next((item.id for item in items if item.is_pending), None)
+    return AiProfileListResponse(items=items, active_profile_id=active, pending_profile_id=pending)
+
+
+@router.post("/ai-profiles", response_model=AiProfileResponse, status_code=201)
+def create_ai_profile(request: AiProfileCreateRequest, db: Session = Depends(get_db)) -> AiProfileResponse:
+    service = AiProfileService(db)
+    try:
+        profile = service.create_profile(**request.model_dump())
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="AI 配置名称已存在") from exc
+    return AiProfileResponse(**service.to_public_dict(profile))
+
+
+@router.put("/ai-profiles/{profile_id}", response_model=AiProfileResponse)
+def update_ai_profile(
+    profile_id: int,
+    request: AiProfileUpdateRequest,
+    db: Session = Depends(get_db),
+) -> AiProfileResponse:
+    service = AiProfileService(db)
+    try:
+        profile = service.update_profile(profile_id, **request.model_dump(exclude_unset=True))
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="AI 配置名称已存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AiProfileResponse(**service.to_public_dict(profile))
+
+
+@router.post("/ai-profiles/{profile_id}/activate", response_model=AiProfileActivationResponse)
+def activate_ai_profile(profile_id: int, db: Session = Depends(get_db)) -> AiProfileActivationResponse:
+    service = AiProfileService(db)
+    try:
+        activation_status = service.request_activation(profile_id)
+        profile = service._get_enabled(profile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return AiProfileActivationResponse(
+        activation_status=activation_status,
+        profile=AiProfileResponse(**service.to_public_dict(profile)),
+    )
+
+
+@router.delete("/ai-profiles/{profile_id}", status_code=204, response_class=Response)
+def delete_ai_profile(profile_id: int, db: Session = Depends(get_db)) -> Response:
+    try:
+        AiProfileService(db).disable_profile(profile_id)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 409 if "不能停用" in detail else 404
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return Response(status_code=204)

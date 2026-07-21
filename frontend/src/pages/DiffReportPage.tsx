@@ -33,6 +33,7 @@ import {
 } from "../api/tasks";
 import PageBackButton from "../components/PageBackButton";
 import type { CompareTask, DiffSummary, ReportTableRow, ReviewStatus } from "../types";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Text } = Typography;
 
@@ -104,9 +105,9 @@ export default function DiffReportPage() {
   const [reviewingStatus, setReviewingStatus] = useState<ReviewStatus | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (silent = false) => {
     if (!Number.isFinite(numericTaskId)) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const [nextTask, nextReport, nextSummary] = await Promise.all([
         getTask(numericTaskId),
@@ -117,9 +118,9 @@ export default function DiffReportPage() {
       setRows(nextReport.rows);
       setSummary(nextSummary);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "获取差异报告失败");
+      if (!silent) message.error(error instanceof Error ? error.message : "获取差异报告失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [numericTaskId]);
 
@@ -128,6 +129,9 @@ export default function DiffReportPage() {
       void loadData();
     });
   }, [loadData]);
+
+  const autoRefreshData = useCallback(() => loadData(true), [loadData]);
+  useAutoRefresh(autoRefreshData, { enabled: Number.isFinite(numericTaskId) });
 
   const sections = useMemo(
     () => Array.from(new Set(rows.map((row) => row.section))).filter(Boolean),

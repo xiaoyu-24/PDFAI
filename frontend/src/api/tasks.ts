@@ -7,7 +7,16 @@ import type {
   PublicSettings,
   ReportTableResponse,
   TaskListResponse,
+  TaskLogListResponse,
+  TaskLogSummary,
+  SourceFilesResponse,
   UpdateSettingsRequest,
+  AiProfile,
+  AiProfileActivationResponse,
+  AiProfileListResponse,
+  SaveAiProfileRequest,
+  LogViewMode,
+  FullLogListResponse,
 } from "../types";
 
 export async function listTasks(params?: {
@@ -50,6 +59,56 @@ export async function getTask(taskId: number): Promise<CompareTask> {
   }
   const { data } = await apiClient.get<CompareTask>(`/tasks/${taskId}`);
   return data;
+}
+
+export async function getTaskLogs(
+  taskId: number,
+  params?: { view?: LogViewMode; level?: string; limit?: number; offset?: number; cursor?: number }
+): Promise<TaskLogListResponse | FullLogListResponse> {
+  const { data } = await apiClient.get(`/tasks/${taskId}/logs`, { params });
+  return data;
+}
+
+export async function getSystemLogs(params?: {
+  view?: LogViewMode;
+  task_no?: string;
+  level?: string;
+  error_category?: string;
+  stage?: string;
+  event_type?: string;
+  degraded?: boolean;
+  min_response_time_ms?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<TaskLogListResponse | FullLogListResponse> {
+  const { data } = await apiClient.get("/system-logs", { params });
+  return data;
+}
+
+export async function getSystemLogSummary(params?: {
+  task_no?: string;
+  level?: string;
+  error_category?: string;
+  stage?: string;
+  event_type?: string;
+  degraded?: boolean;
+  min_response_time_ms?: number;
+}): Promise<TaskLogSummary> {
+  const { data } = await apiClient.get<TaskLogSummary>("/system-logs/summary", { params });
+  return data;
+}
+
+export async function getSourceFiles(taskId: number): Promise<SourceFilesResponse> {
+  const { data } = await apiClient.get<SourceFilesResponse>(`/tasks/${taskId}/source-files`);
+  return data;
+}
+
+export function getSourceFilePreviewUrl(taskId: number, role: "base" | "compare"): string {
+  return buildApiUrl(`/tasks/${taskId}/source-files/${role}/preview`);
+}
+
+export function getSourceFileDownloadUrl(taskId: number, role: "base" | "compare"): string {
+  return buildApiUrl(`/tasks/${taskId}/source-files/${role}/download`);
 }
 
 export async function pauseTask(taskId: number): Promise<CompareTask> {
@@ -122,6 +181,35 @@ export async function updateSettings(
 ): Promise<PublicSettings> {
   const { data } = await apiClient.put<PublicSettings>("/settings", request);
   return data;
+}
+
+export async function listAiProfiles(): Promise<AiProfileListResponse> {
+  const { data } = await apiClient.get<AiProfileListResponse>("/settings/ai-profiles");
+  return data;
+}
+
+export async function createAiProfile(request: SaveAiProfileRequest): Promise<AiProfile> {
+  const { data } = await apiClient.post<AiProfile>("/settings/ai-profiles", request);
+  return data;
+}
+
+export async function updateAiProfile(
+  profileId: number,
+  request: Partial<SaveAiProfileRequest>
+): Promise<AiProfile> {
+  const { data } = await apiClient.put<AiProfile>(`/settings/ai-profiles/${profileId}`, request);
+  return data;
+}
+
+export async function activateAiProfile(profileId: number): Promise<AiProfileActivationResponse> {
+  const { data } = await apiClient.post<AiProfileActivationResponse>(
+    `/settings/ai-profiles/${profileId}/activate`
+  );
+  return data;
+}
+
+export async function deleteAiProfile(profileId: number): Promise<void> {
+  await apiClient.delete(`/settings/ai-profiles/${profileId}`);
 }
 
 export async function reviewDiff(

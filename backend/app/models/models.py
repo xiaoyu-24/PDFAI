@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sqlalchemy import (
-    Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Enum, Boolean, Index, func,
+    Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Enum, Boolean, Index, UniqueConstraint, func,
 )
 from sqlalchemy.orm import relationship
 
@@ -146,6 +146,7 @@ class CompareTask(Base):
     task_no = Column(String(64), nullable=False, unique=True)
     base_file_id = Column(Integer, ForeignKey("pdf_files.id", ondelete="CASCADE"), nullable=False)
     compare_file_id = Column(Integer, ForeignKey("pdf_files.id", ondelete="CASCADE"), nullable=False)
+    ai_profile_id = Column(Integer, ForeignKey("ai_profiles.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(64), nullable=False, default="uploaded")
     progress = Column(Integer, nullable=False, default=0)
     summary = Column(Text, nullable=True)
@@ -158,8 +159,29 @@ class CompareTask(Base):
 
     base_file = relationship("PdfFile", foreign_keys=[base_file_id])
     compare_file = relationship("PdfFile", foreign_keys=[compare_file_id])
+    ai_profile = relationship("AiProfile", back_populates="tasks")
     matches = relationship("ElementMatch", back_populates="compare_task", cascade="all, delete-orphan")
     diffs = relationship("CompareDiff", back_populates="compare_task", cascade="all, delete-orphan")
+    logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
+
+
+class AiProfile(Base):
+    __tablename__ = "ai_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), nullable=False, unique=True)
+    base_url = Column(String(1024), nullable=False)
+    api_key_encrypted = Column(Text, nullable=False)
+    model = Column(String(256), nullable=False)
+    timeout_seconds = Column(Integer, nullable=False, default=120)
+    max_retries = Column(Integer, nullable=False, default=2)
+    is_active = Column(Boolean, nullable=False, default=False)
+    is_pending = Column(Boolean, nullable=False, default=False)
+    is_enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    tasks = relationship("CompareTask", back_populates="ai_profile")
 
 
 class ElementMatch(Base):
@@ -244,4 +266,68 @@ class ReviewLog(Base):
 
     __table_args__ = (
         Index("idx_review_logs_diff_id", "compare_diff_id"),
+    )
+
+
+class TaskLog(Base):
+    __tablename__ = "task_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("compare_tasks.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String(64), nullable=False)
+    stage = Column(String(64), nullable=False)
+    component = Column(String(64), nullable=False, default="task")
+    event_type = Column(String(32), nullable=False)
+    level = Column(String(16), nullable=False, default="info")
+    status = Column(String(32), nullable=False)
+    error_category = Column(String(32), nullable=False, default="none")
+    error_code = Column(String(64), nullable=True)
+    message = Column(Text, nullable=False)
+    error_detail = Column(Text, nullable=True)
+    attempt_no = Column(Integer, nullable=True)
+    max_attempts = Column(Integer, nullable=True)
+    timeout_ms = Column(Integer, nullable=True)
+    response_time_ms = Column(Integer, nullable=True)
+    is_degraded = Column(Boolean, nullable=False, default=False)
+    fallback_action = Column(String(128), nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    is_timeline = Column(Boolean, nullable=False, default=False, server_default="0")
+    retention_until = Column(DateTime, nullable=True)
+    detail_available_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    task = relationship("CompareTask", back_populates="logs")
+
+    __table_args__ = (
+        Index("idx_task_logs_task_created", "task_id", "created_at"),
+        Index("idx_task_logs_level_created", "level", "created_at"),
+        Index("idx_task_logs_category_created", "error_category", "created_at"),
+        Index("idx_task_logs_stage_status", "stage", "status"),
+        Index("idx_task_logs_run_created", "run_id", "created_at"),
+        Index("idx_task_logs_timeline", "task_id", "is_timeline", "created_at"),
+        Index("idx_task_logs_retention", "level", "retention_until", "created_at"),
+    )
+
+
+class TaskLogFile(Base):
+    __tablename__ = "task_log_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Integer, ForeignKey("compare_tasks.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String(64), nullable=False)
+    relative_path = Column(String(512), nullable=False)
+    status = Column(String(32), nullable=False, default="writing")
+    line_count = Column(Integer, nullable=False, default=0)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    task = relationship("CompareTask")
+
+    __table_args__ = (
+        Index("idx_task_log_files_task_id", "task_id"),
+        Index("idx_task_log_files_expires", "expires_at", "status"),
+        UniqueConstraint("task_id", "run_id", name="uq_task_log_files_task_run"),
     )

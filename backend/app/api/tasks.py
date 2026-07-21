@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import datetime
 import json
+import mimetypes
+import time
+import uuid
+from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.exc import OperationalError
@@ -21,30 +26,51 @@ from app.schemas.task import (
     DiffSummaryResponse,
     DrawingElementResponse,
     CompareDiffResponse,
+    SourceFileResponse,
+    SourceFilesResponse,
 )
 from app.services.task_service import TaskService
 from app.services.task_runner import TaskRunner
 from app.services.report_service import REPORT_COLUMNS, ReportService
 from app.models.models import AiExtractionRun, DrawingElement, CompareDiff, CompareTask, PdfFile
+from app.models.models import TaskLog
+from app.schemas.task_log import TaskLogListResponse, FullLogListResponse
+from app.api.system_logs import _to_response as _task_log_to_response
+from app.services.task_log_service import TaskLogService, classify_task_error
 
 
 def _run_full_pipeline(task_id: int) -> None:
     from app.db.session import get_session_local
     from app.services.task_service import TaskControlInterrupt
+    from app.services.detail_log_writer import TaskDetailLogWriter
     db = get_session_local()()
     task = None
+    detail_writer = None
+    run_id = None
     try:
         service = TaskService(db)
         task = service.get_task(task_id)
         if not task:
             return
 
+        run_id = _latest_task_run_id(db, task.id)
+        # 创建完整日志写入器
+        logs_root = get_settings().get_storage_path("logs")
+        detail_writer = TaskDetailLogWriter(logs_root, db)
+        try:
+            detail_writer.open(task.id, run_id)
+        except Exception:
+            detail_writer = None  # 写入失败不影响业务
+
         steps = _steps_for_status(task.status, service)
         for step in steps:
             db.refresh(task)
             if task.status in {"failed", "paused", "deleted"}:
                 break
-            step(task)
+            _run_logged_step(db, task, step, run_id, detail_writer=detail_writer)
+        db.refresh(task)
+        if task.status == "completed":
+            _mark_degraded_results_for_manual_review(db, task.id, run_id)
     except TaskControlInterrupt:
         pass
     except Exception as exc:
@@ -53,7 +79,210 @@ def _run_full_pipeline(task_id: int) -> None:
             task.summary = f"任务执行失败: {exc}"
             db.commit()
     finally:
+        # 关闭并压缩完整日志文件
+        if detail_writer is not None and run_id is not None and task is not None:
+            try:
+                detail_writer.close(task.id, run_id)
+            except Exception:
+                pass
+        if hasattr(db, "query"):
+            try:
+                from app.services.ai_profile_service import AiProfileService
+                AiProfileService(db).apply_pending_if_idle()
+            except Exception:
+                rollback = getattr(db, "rollback", None)
+                if callable(rollback):
+                    rollback()
         db.close()
+
+
+def _run_logged_step(db: Session, task: CompareTask, step, run_id: str, *, detail_writer=None) -> None:
+    task_id = task.id
+    stage = task.status
+    logger = TaskLogService(db)
+    # 完整日志：记录阶段开始
+    if detail_writer:
+        detail_writer.write_event(
+            task_id=task_id, run_id=run_id, stage=stage, component="task",
+            event_type="started", level="info", status="running",
+            message=f"开始执行任务阶段：{stage}",
+        )
+    # 普通阶段开始不写数据库，只记录开始时间
+    started_at = time.perf_counter()
+    try:
+        step(task)
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        if detail_writer:
+            detail_writer.write_event(
+                task_id=task_id, run_id=run_id, stage=stage, component="task",
+                event_type="failed", level="error", status="failed",
+                message=f"任务阶段执行失败：{stage}",
+                error_detail=str(exc), response_time_ms=duration_ms,
+            )
+        logger.safe_record(
+            task_id=task_id,
+            run_id=run_id,
+            stage=stage,
+            component="task",
+            event_type="failed",
+            level="error",
+            status="failed",
+            message=f"任务阶段执行失败：{stage}",
+            error_detail=str(exc),
+            response_time_ms=duration_ms,
+        )
+        raise
+
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    db.refresh(task)
+    if task.status == "failed":
+        error_detail = task.last_error or task.summary
+        error_category = classify_task_error(error_detail)
+        settings = get_settings()
+        can_degrade_full_page = (
+            task.failed_stage == "extracting_full_page_elements"
+            and settings.AI_ENABLE_REGION_EXTRACTION
+            and error_category in {"model_api", "network"}
+        )
+        if can_degrade_full_page:
+            task.status = "full_page_elements_skipped"
+            task.progress = max(task.progress, 58)
+            task.summary = "整页识别失败，已降级使用区域识别继续处理。"
+            task.failed_stage = None
+            task.last_error = None
+            task.updated_at = datetime.datetime.now()
+            db.commit()
+            if detail_writer:
+                detail_writer.write_event(
+                    task_id=task_id,
+                    run_id=run_id,
+                    stage="extracting_full_page_elements",
+                    component="model_api",
+                    event_type="degraded",
+                    level="warning",
+                    status="degraded",
+                    message="整页识别失败，已降级使用区域识别",
+                    error_category=error_category,
+                    error_detail=error_detail,
+                    response_time_ms=duration_ms,
+                )
+            logger.safe_record(
+                task_id=task_id,
+                run_id=run_id,
+                stage="extracting_full_page_elements",
+                component="model_api",
+                event_type="degraded",
+                level="warning",
+                status="degraded",
+                message="整页识别失败，已降级使用区域识别",
+                error_category=error_category,
+                error_detail=error_detail,
+                attempt_no=getattr(settings, "AI_MAX_RETRIES", 0) + 1,
+                max_attempts=getattr(settings, "AI_MAX_RETRIES", 0) + 1,
+                timeout_ms=getattr(settings, "AI_TIMEOUT_SECONDS", 0) * 1000 or None,
+                response_time_ms=duration_ms,
+                is_degraded=True,
+                fallback_action="使用区域识别继续处理",
+            )
+            return
+        # 失败：写一条时间线摘要（长期保留）+ 一条异常详情（90天）
+        exception_event_type = (
+            "timeout"
+            if error_category == "network" and error_detail and "time" in error_detail.lower()
+            else "failed"
+        )
+        exception_component = "model_api" if task.failed_stage and "elements" in task.failed_stage else "task"
+        if detail_writer:
+            detail_writer.write_event(
+                task_id=task_id,
+                run_id=run_id,
+                stage=stage,
+                component=exception_component,
+                event_type=exception_event_type,
+                level="error",
+                status="failed",
+                message=f"任务阶段执行失败：{stage}",
+                error_category=error_category,
+                error_detail=error_detail,
+                response_time_ms=duration_ms,
+            )
+        logger.safe_record(
+            task_id=task_id,
+            run_id=run_id,
+            stage=stage,
+            component="task",
+            event_type="failed",
+            level="info",
+            status="failed",
+            message=f"任务阶段执行失败：{stage}",
+            response_time_ms=duration_ms,
+            is_timeline=True,
+        )
+        logger.safe_record(
+            task_id=task_id,
+            run_id=run_id,
+            stage=stage,
+            component=exception_component,
+            event_type=exception_event_type,
+            level="error",
+            status="failed",
+            message=f"任务阶段执行失败：{stage}",
+            error_detail=error_detail,
+            attempt_no=getattr(settings, "AI_MAX_RETRIES", 0) + 1 if task.failed_stage and "elements" in task.failed_stage else None,
+            max_attempts=getattr(settings, "AI_MAX_RETRIES", 0) + 1 if task.failed_stage and "elements" in task.failed_stage else None,
+            timeout_ms=getattr(settings, "AI_TIMEOUT_SECONDS", 0) * 1000 or None,
+            response_time_ms=duration_ms,
+        )
+        return
+    # 成功：写一条聚合时间线记录
+    if detail_writer:
+        detail_writer.write_event(
+            task_id=task_id, run_id=run_id, stage=stage, component="task",
+            event_type="succeeded", level="info", status="succeeded",
+            message=f"任务阶段执行完成：{stage}", response_time_ms=duration_ms,
+        )
+    logger.safe_record(
+        task_id=task_id,
+        run_id=run_id,
+        stage=stage,
+        component="task",
+        event_type="succeeded",
+        level="info",
+        status="succeeded",
+        message=f"任务阶段执行完成：{stage}",
+        response_time_ms=duration_ms,
+        is_timeline=True,
+    )
+
+
+def _latest_task_run_id(db: Session, task_id: int) -> str:
+    if not hasattr(db, "query"):
+        return uuid.uuid4().hex
+    latest_log = (
+        db.query(TaskLog)
+        .filter(TaskLog.task_id == task_id)
+        .order_by(TaskLog.id.desc())
+        .first()
+    )
+    return latest_log.run_id if latest_log else uuid.uuid4().hex
+
+
+def _mark_degraded_results_for_manual_review(db: Session, task_id: int, run_id: str) -> None:
+    if not hasattr(db, "query"):
+        return
+    degraded = (
+        db.query(TaskLog)
+        .filter(TaskLog.task_id == task_id, TaskLog.run_id == run_id, TaskLog.is_degraded.is_(True))
+        .first()
+    )
+    if not degraded:
+        return
+    db.query(CompareDiff).filter(CompareDiff.compare_task_id == task_id).update(
+        {CompareDiff.need_manual_check: True, CompareDiff.review_status: "pending"},
+        synchronize_session=False,
+    )
+    db.commit()
 
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -214,6 +443,17 @@ async def create_task(
     task.status = "queued"
     db.commit()
     db.refresh(task)
+    TaskLogService(db).safe_record(
+        task_id=task.id,
+        run_id=uuid.uuid4().hex,
+        stage="queued",
+        component="task",
+        event_type="queued",
+        level="info",
+        status="queued",
+        message="任务已创建并进入处理队列",
+        is_timeline=True,
+    )
     task_runner.submit(task.id)
 
     return _task_to_response(task)
@@ -277,6 +517,168 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     return _task_to_response(task)
 
 
+@router.get("/{task_id}/logs")
+def get_task_logs(
+    task_id: int,
+    view: str = Query("timeline", pattern="^(timeline|exceptions|full)$"),
+    level: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    cursor: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    task = db.query(CompareTask).filter(CompareTask.id == task_id, CompareTask.status != "deleted").first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if view == "full":
+        return _get_task_full_logs(db, task, cursor, limit)
+
+    query = db.query(TaskLog).filter(TaskLog.task_id == task_id)
+    if view == "timeline":
+        query = query.filter(TaskLog.is_timeline.is_(True))
+    elif view == "exceptions":
+        query = query.filter(TaskLog.level.in_(["warning", "error"]))
+    if level:
+        query = query.filter(TaskLog.level == level)
+    total = query.count()
+    logs = query.order_by(TaskLog.created_at.desc(), TaskLog.id.desc()).offset(offset).limit(limit).all()
+    return TaskLogListResponse(
+        items=[_task_log_to_response(log) for log in logs],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _get_task_full_logs(db: Session, task: CompareTask, cursor: int, limit: int) -> FullLogListResponse:
+    from app.core.config import get_settings
+    from app.services.detail_log_writer import read_detail_logs
+    from app.models.models import TaskLogFile
+
+    logs_root = get_settings().get_storage_path("logs")
+    # 查找最新的日志文件清单
+    manifest = (
+        db.query(TaskLogFile)
+        .filter(TaskLogFile.task_id == task.id)
+        .order_by(TaskLogFile.id.desc())
+        .first()
+    )
+    if manifest is None:
+        return FullLogListResponse(
+            items=[], total=0, cursor=cursor,
+            status_message="完整日志保存 7 天，当前任务无完整日志文件。",
+        )
+    if manifest.status == "expired":
+        return FullLogListResponse(
+            items=[], total=0, cursor=cursor,
+            status_message="完整日志已过期（保存 7 天），请查看简洁时间线或异常记录。",
+        )
+    if manifest.status == "writing":
+        pass  # 正在写入中，仍可读取
+    entries, next_cursor = read_detail_logs(logs_root, task.id, manifest.run_id, cursor=cursor, limit=limit)
+    status_msg = None
+    if not entries and manifest.status == "ready":
+        status_msg = "完整日志文件缺失或正在压缩中。"
+    return FullLogListResponse(
+        items=entries,
+        total=len(entries),
+        cursor=cursor,
+        next_cursor=next_cursor if next_cursor != -1 else None,
+        status_message=status_msg,
+    )
+
+
+@router.get("/{task_id}/source-files", response_model=SourceFilesResponse)
+def get_source_files(task_id: int, db: Session = Depends(get_db)):
+    task = _source_task_or_404(db, task_id)
+    files = []
+    for role, source_file in [("base", task.base_file), ("compare", task.compare_file)]:
+        files.append(SourceFileResponse(
+            role=role,
+            original_name=source_file.original_name,
+            file_type=source_file.file_type,
+            page_count=source_file.page_count,
+            preview_url=f"/api/tasks/{task.id}/source-files/{role}/preview",
+            download_url=f"/api/tasks/{task.id}/source-files/{role}/download",
+        ))
+    return SourceFilesResponse(task_id=task.id, files=files)
+
+
+@router.get("/{task_id}/source-files/{role}/preview")
+def preview_source_file(
+    task_id: int,
+    role: Literal["base", "compare"],
+    db: Session = Depends(get_db),
+):
+    task = _source_task_or_404(db, task_id)
+    source_file, path = _source_file_or_404(db, task, role)
+    media_type = _source_media_type(source_file.original_name, source_file.file_type)
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=source_file.original_name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/{task_id}/source-files/{role}/download")
+def download_source_file(
+    task_id: int,
+    role: Literal["base", "compare"],
+    db: Session = Depends(get_db),
+):
+    task = _source_task_or_404(db, task_id)
+    source_file, path = _source_file_or_404(db, task, role)
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=source_file.original_name,
+        content_disposition_type="attachment",
+    )
+
+
+def _source_task_or_404(db: Session, task_id: int) -> CompareTask:
+    task = db.query(CompareTask).filter(CompareTask.id == task_id, CompareTask.status != "deleted").first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+def _source_file_or_404(db: Session, task: CompareTask, role: str):
+    source_file = task.base_file if role == "base" else task.compare_file
+    uploads_root = get_settings().get_storage_path("uploads").resolve()
+    path = Path(source_file.stored_path).resolve()
+    if not path.is_relative_to(uploads_root) or not path.is_file():
+        latest_log = (
+            db.query(TaskLog)
+            .filter(TaskLog.task_id == task.id)
+            .order_by(TaskLog.id.desc())
+            .first()
+        )
+        TaskLogService(db).safe_record(
+            task_id=task.id,
+            run_id=latest_log.run_id if latest_log else uuid.uuid4().hex,
+            stage="source_file_preview",
+            component="file",
+            event_type="failed",
+            level="error",
+            status="failed",
+            error_category="retrieval",
+            error_code="SOURCE_FILE_NOT_FOUND",
+            message=f"{role} 原始文件无法读取",
+            error_detail="原始文件不存在或不在允许的存储目录中",
+        )
+        raise HTTPException(status_code=404, detail="原始文件不存在或无法读取")
+    return source_file, path
+
+
+def _source_media_type(filename: str, file_type: str) -> str:
+    if file_type == "pdf":
+        return "application/pdf"
+    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+
 @router.post("/{task_id}/pause", response_model=TaskResponse)
 def pause_task(task_id: int, db: Session = Depends(get_db)):
     service = TaskService(db)
@@ -289,6 +691,17 @@ def pause_task(task_id: int, db: Session = Depends(get_db)):
     task.summary = "任务已暂停，可稍后继续处理。"
     db.commit()
     db.refresh(task)
+    TaskLogService(db).safe_record(
+        task_id=task.id,
+        run_id=_latest_task_run_id(db, task.id),
+        stage="paused",
+        component="task",
+        event_type="paused",
+        level="warning",
+        status="paused",
+        message="任务已由用户暂停",
+        is_timeline=True,
+    )
     return _task_to_response(task)
 
 
@@ -304,6 +717,17 @@ def resume_task(task_id: int, db: Session = Depends(get_db)):
     task.summary = None
     db.commit()
     db.refresh(task)
+    TaskLogService(db).safe_record(
+        task_id=task.id,
+        run_id=_latest_task_run_id(db, task.id),
+        stage="queued",
+        component="task",
+        event_type="resumed",
+        level="info",
+        status="queued",
+        message="任务已继续并重新进入队列",
+        is_timeline=True,
+    )
     task_runner.submit(task.id)
     return _task_to_response(task)
 
@@ -318,6 +742,18 @@ def retry_task(task_id: int, db: Session = Depends(get_db)):
         task = service.reset_failed_task_for_retry(task)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    TaskLogService(db).safe_record(
+        task_id=task.id,
+        run_id=uuid.uuid4().hex,
+        stage=task.status,
+        component="task",
+        event_type="retry",
+        level="warning",
+        status="queued",
+        message="失败任务已由用户重新提交",
+        attempt_no=1,
+        is_timeline=True,
+    )
     task_runner.submit(task.id)
     return _task_to_response(task)
 

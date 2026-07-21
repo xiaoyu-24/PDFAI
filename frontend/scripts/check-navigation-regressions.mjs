@@ -153,10 +153,10 @@ assert(
   "TaskProgressPage must load report-table conclusions and render header actions"
 );
 assert(
-  taskProgressSource.includes('title="结论/差异/原因"') &&
+  !taskProgressSource.includes('title="结论/差异/原因"') &&
     taskProgressSource.includes("extra={") &&
     !taskProgressSource.includes('title="下一步"'),
-  "TaskProgressPage must replace the next-step card with a conclusion card that has header actions"
+  "TaskProgressPage must keep header actions without the conclusion title text"
 );
 assert(
   taskProgressSource.includes("lg={8}") && taskProgressSource.includes("lg={16}"),
@@ -166,8 +166,96 @@ assert(
   !taskProgressSource.includes('<Button block type="primary" icon={<FileSearchOutlined />}>查看差异报告</Button>'),
   "TaskProgressPage action buttons must not keep the old full-width button layout"
 );
+assert(
+  taskProgressSource.includes("查看原始文件") &&
+    taskProgressSource.includes("getTaskLogs") &&
+    taskProgressSource.includes('title="执行日志"'),
+  "TaskProgressPage must link to source files and render task execution logs"
+);
+
+const routesSource = read("src/routes/index.tsx");
+assert(
+  routesSource.includes('path="/system-logs"') &&
+    routesSource.includes('path="/tasks/:taskId/source-files"') &&
+    routesSource.includes("SystemLogsPage") &&
+    routesSource.includes("SourceFilesPage"),
+  "application routes must include system logs and source file preview pages"
+);
+
+const appShellSource = read("src/components/AppShell.tsx");
+assert(
+  appShellSource.includes("系统日志") && appShellSource.includes('to="/system-logs"'),
+  "AppShell must expose the global system log monitor"
+);
+
+assert(
+  apiSource.includes("getTaskLogs") &&
+    apiSource.includes("getSystemLogs") &&
+    apiSource.includes("getSystemLogSummary") &&
+    apiSource.includes("getSourceFiles") &&
+    apiSource.includes("getSourceFilePreviewUrl"),
+  "frontend task API must expose log monitoring and source file endpoints"
+);
+
+const systemLogsSource = read("src/pages/SystemLogsPage.tsx");
+assert(
+  systemLogsSource.includes("getSystemLogSummary") &&
+    systemLogsSource.includes("error_category") &&
+    systemLogsSource.includes("event_type") &&
+    systemLogsSource.includes("min_response_time_ms") &&
+    systemLogsSource.includes("degraded") &&
+    systemLogsSource.includes("Pagination") &&
+    systemLogsSource.includes("useAutoRefresh"),
+  "SystemLogsPage must show summary, filters, pagination and automatic refresh"
+);
+assert(
+  systemLogsSource.includes("logLevelLabel") &&
+    systemLogsSource.includes("errorCategoryLabel") &&
+    systemLogsSource.includes("eventTypeLabel") &&
+    systemLogsSource.includes("taskStageLabel") &&
+    taskProgressSource.includes("logLevelLabel") &&
+    taskProgressSource.includes("errorCategoryLabel") &&
+    taskProgressSource.includes("eventTypeLabel") &&
+    taskProgressSource.includes("taskStageLabel"),
+  "all log filters and tables must render shared Chinese enum labels"
+);
+
+const sourceFilesSource = read("src/pages/SourceFilesPage.tsx");
+assert(
+  sourceFilesSource.includes("iframe") &&
+    sourceFilesSource.includes("<img") &&
+    sourceFilesSource.includes("onError") &&
+    sourceFilesSource.includes("下载原文件"),
+  "SourceFilesPage must preview PDF/images and keep a download fallback"
+);
 
 const dashboardSource = read("src/pages/DashboardPage.tsx");
+const taskPickerAutoRefreshSource = read("src/pages/TaskPickerPage.tsx");
+const diffReportAutoRefreshSource = read("src/pages/DiffReportPage.tsx");
+const elementsAutoRefreshSource = read("src/pages/ElementsPage.tsx");
+const autoRefreshPages = {
+  "DashboardPage": dashboardSource,
+  "TaskPickerPage": taskPickerAutoRefreshSource,
+  "TaskProgressPage": taskProgressSource,
+  "DiffReportPage": diffReportAutoRefreshSource,
+  "ElementsPage": elementsAutoRefreshSource,
+  "SystemLogsPage": systemLogsSource,
+};
+for (const [pageName, source] of Object.entries(autoRefreshPages)) {
+  assert(
+    source.includes("useAutoRefresh") && !source.includes("window.setInterval"),
+    `${pageName} must use the shared automatic refresh hook`
+  );
+}
+
+const autoRefreshHookSource = read("src/hooks/useAutoRefresh.ts");
+assert(
+  autoRefreshHookSource.includes("2000") &&
+    autoRefreshHookSource.includes("visibilitychange") &&
+    autoRefreshHookSource.includes('addEventListener("focus"') &&
+    autoRefreshHookSource.includes("runningRef"),
+  "useAutoRefresh must poll every two seconds, refresh on focus, and prevent overlapping requests"
+);
 const dashboardColumnsStart = dashboardSource.indexOf("const columns");
 const dashboardColumnsSource = dashboardSource.slice(
   dashboardColumnsStart,
