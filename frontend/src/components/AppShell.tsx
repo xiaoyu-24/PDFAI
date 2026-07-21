@@ -5,6 +5,7 @@ import {
   FileSearchOutlined,
   PlusOutlined,
   SettingOutlined,
+  UnorderedListOutlined,
 } from "@ant-design/icons";
 import { Link, Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -17,6 +18,7 @@ function selectedKey(pathname: string) {
   if (pathname === "/diffs" || pathname.includes("/diffs")) return "diffs";
   if (pathname === "/elements" || pathname.includes("/elements")) return "elements";
   if (pathname.startsWith("/settings")) return "/settings";
+  if (pathname.startsWith("/system-logs")) return "/system-logs";
   return "task-detail";
 }
 
@@ -29,6 +31,8 @@ function pageTitle(pathname: string) {
   if (pathname.includes("/diffs")) return "差异审核";
   if (pathname.includes("/elements")) return "图纸元素";
   if (pathname.startsWith("/settings")) return "系统设置";
+  if (pathname.startsWith("/system-logs")) return "系统日志";
+  if (pathname.includes("/source-files")) return "原始对比文件";
   return "任务详情";
 }
 
@@ -56,6 +60,7 @@ export default function AppShell() {
       icon: <AppstoreOutlined />,
       label: <Link to={taskId ? `/tasks/${taskId}/elements` : "/elements"}>图纸元素</Link>,
     },
+    { key: "/system-logs", icon: <UnorderedListOutlined />, label: <Link to="/system-logs">系统日志</Link> },
     { key: "/settings", icon: <SettingOutlined />, label: <Link to="/settings">系统设置</Link> },
   ];
 

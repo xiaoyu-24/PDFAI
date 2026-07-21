@@ -46,6 +46,20 @@ class TaskListResponse(BaseModel):
     offset: int
 
 
+class SourceFileResponse(BaseModel):
+    role: str
+    original_name: str
+    file_type: str
+    page_count: int
+    preview_url: str
+    download_url: str
+
+
+class SourceFilesResponse(BaseModel):
+    task_id: int
+    files: list[SourceFileResponse]
+
+
 class ReportTableRowResponse(BaseModel):
     section: str
     section_index: int

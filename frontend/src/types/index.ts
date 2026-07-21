@@ -115,6 +115,73 @@ export interface TaskListResponse {
   offset: number;
 }
 
+export interface TaskLog {
+  id: number;
+  task_id: number;
+  task_no: string | null;
+  run_id: string;
+  stage: string;
+  component: string;
+  event_type: string;
+  level: "info" | "warning" | "error";
+  status: string;
+  error_category: "none" | "model_api" | "network" | "code" | "database" | "retrieval";
+  error_code: string | null;
+  message: string;
+  error_detail: string | null;
+  attempt_no: number | null;
+  max_attempts: number | null;
+  timeout_ms: number | null;
+  response_time_ms: number | null;
+  is_degraded: boolean;
+  fallback_action: string | null;
+  metadata_json: Record<string, unknown> | null;
+  is_timeline: boolean;
+  created_at: string;
+}
+
+export interface TaskLogListResponse {
+  items: TaskLog[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type LogViewMode = "timeline" | "exceptions" | "full";
+
+export interface FullLogListResponse {
+  items: Record<string, unknown>[];
+  total: number;
+  cursor: number;
+  next_cursor: number | null;
+  status_message: string | null;
+}
+
+export interface TaskLogSummary {
+  total: number;
+  errors: number;
+  timeouts: number;
+  retries: number;
+  degraded: number;
+  average_response_time_ms: number;
+  p95_response_time_ms: number;
+  category_counts: Record<string, number>;
+}
+
+export interface SourceFileInfo {
+  role: "base" | "compare";
+  original_name: string;
+  file_type: "pdf" | "image";
+  page_count: number;
+  preview_url: string;
+  download_url: string;
+}
+
+export interface SourceFilesResponse {
+  task_id: number;
+  files: SourceFileInfo[];
+}
+
 export interface ReportTableRow {
   section: string;
   section_index: number;
@@ -223,4 +290,37 @@ export interface UpdateSettingsRequest {
   ai_enable_region_extraction?: boolean;
   ai_image_max_edge?: number;
   ai_image_jpeg_quality?: number;
+}
+
+export interface AiProfile {
+  id: number;
+  name: string;
+  base_url: string;
+  model: string;
+  timeout_seconds: number;
+  max_retries: number;
+  has_api_key: boolean;
+  is_active: boolean;
+  is_pending: boolean;
+  is_enabled: boolean;
+}
+
+export interface AiProfileListResponse {
+  items: AiProfile[];
+  active_profile_id: number | null;
+  pending_profile_id: number | null;
+}
+
+export interface SaveAiProfileRequest {
+  name: string;
+  base_url: string;
+  api_key?: string;
+  model: string;
+  timeout_seconds: number;
+  max_retries: number;
+}
+
+export interface AiProfileActivationResponse {
+  activation_status: "active" | "pending";
+  profile: AiProfile;
 }

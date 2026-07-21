@@ -33,11 +33,14 @@ env/
 /storage/regions/*
 /storage/ai_outputs/*
 /storage/exports/*
+/storage/logs/*
+/storage/config/*.key
 !/storage/uploads/.gitkeep
 !/storage/pages/.gitkeep
 !/storage/regions/.gitkeep
 !/storage/ai_outputs/.gitkeep
 !/storage/exports/.gitkeep
+!/storage/logs/.gitkeep
 
 # ===== 构建产物 / 打包压缩包 =====
 *.zip
@@ -62,6 +65,7 @@ pnpm-debug.log*
 .coverage
 htmlcov/
 .pytest_cache/
+/.pytest-run*/
 pytest.xml
 backend/tests/
 
@@ -85,3 +89,6 @@ logs/
 # ===== Local-only deployment/collaboration notes =====
 /AGENTS.md
 /deploy/github-deploy.md
+
+# ===== Local design specifications =====
+/docs/superpowers/

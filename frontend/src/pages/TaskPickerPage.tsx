@@ -5,6 +5,7 @@ import { SearchOutlined } from "@ant-design/icons";
 import { Link, useLocation } from "react-router-dom";
 import { listTasks } from "../api/tasks";
 import type { TaskListItem } from "../types";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Text } = Typography;
 
@@ -55,8 +56,8 @@ export default function TaskPickerPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
-  const fetchTasks = useCallback(async () => {
-    setLoading(true);
+  const fetchTasks = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const result = await listTasks({
         keyword: keyword.trim() || undefined,
@@ -67,9 +68,9 @@ export default function TaskPickerPage() {
       setTasks(result.items);
       setTotal(result.total);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "获取任务列表失败");
+      if (!silent) message.error(error instanceof Error ? error.message : "获取任务列表失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [keyword, page, pageSize, status]);
 
@@ -78,6 +79,9 @@ export default function TaskPickerPage() {
       void fetchTasks();
     });
   }, [fetchTasks]);
+
+  const autoRefreshTasks = useCallback(() => fetchTasks(true), [fetchTasks]);
+  useAutoRefresh(autoRefreshTasks);
 
   const columns: ColumnsType<TaskListItem> = useMemo(
     () => [

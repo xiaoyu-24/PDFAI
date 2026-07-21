@@ -13,11 +13,12 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings, Settings
 from app.models.models import (
     PdfFile, PdfPage, PageRegion, AiExtractionRun,
-    DrawingElement, CompareTask, ElementMatch, CompareDiff,
+    DrawingElement, CompareTask, ElementMatch, CompareDiff, AiProfile,
 )
 from app.services.pdf_service import PdfRenderService, compute_hash
 from app.services.crop_service import CropService
 from app.ai.base import VisionModelProvider
+from app.services.ai_profile_service import AiProfileService
 
 
 class TaskControlInterrupt(RuntimeError):
@@ -63,6 +64,7 @@ class TaskService:
     def __init__(self, db: Session, settings: Settings | None = None):
         self.db = db
         self.settings = settings or get_settings()
+        self._provider_task: CompareTask | None = None
 
     def create_task(
         self,
@@ -75,10 +77,12 @@ class TaskService:
     ) -> CompareTask:
         base_file = self._save_input_file(base_pdf_bytes, base_filename, "base", base_file_format)
         compare_file = self._save_input_file(compare_pdf_bytes, compare_filename, "compare", compare_file_format)
+        profile = AiProfileService(self.db, settings=self.settings).ensure_default_profile()
         task = CompareTask(
             task_no=generate_task_no(),
             base_file_id=base_file.id,
             compare_file_id=compare_file.id,
+            ai_profile_id=profile.id,
             status="uploaded",
             progress=0,
         )
@@ -122,13 +126,39 @@ class TaskService:
     def _save_pdf_file(self, pdf_bytes: bytes, filename: str, file_role: str) -> PdfFile:
         return self._save_input_file(pdf_bytes, filename, file_role, "pdf")
 
+    def _get_provider_for_task(self, task: CompareTask) -> VisionModelProvider:
+        self._provider_task = task
+        return self._get_provider()
+
     def _get_provider(self) -> VisionModelProvider:
+        task = self._provider_task
+        if task is not None and task.ai_profile_id is not None:
+            profile_service = AiProfileService(self.db, settings=self.settings)
+            profile = self.db.query(AiProfile).filter(AiProfile.id == task.ai_profile_id).first()
+            if profile and self._has_real_profile_config(profile, profile_service):
+                from app.ai.openai_provider import OpenAICompatibleProvider
+                return OpenAICompatibleProvider(
+                    base_url=profile.base_url,
+                    api_key=profile_service.decrypt_api_key(profile),
+                    model=profile.model,
+                    timeout_seconds=profile.timeout_seconds,
+                    max_retries=profile.max_retries,
+                )
         if self.settings.has_real_ai_config:
             from app.ai.openai_provider import OpenAICompatibleProvider
             return OpenAICompatibleProvider()
 
         from app.ai.mock_provider import MockVisionProvider
         return MockVisionProvider()
+
+    @staticmethod
+    def _has_real_profile_config(profile, profile_service: AiProfileService) -> bool:
+        api_key = profile_service.decrypt_api_key(profile)
+        return all([
+            profile.base_url and profile.base_url != "https://example.com/v1",
+            api_key and api_key != "replace-with-real-key",
+            profile.model and profile.model != "replace-with-vision-model",
+        ])
 
     # ─── Step 1: Render Pages ───
     def render_pages(self, task: CompareTask) -> None:
@@ -176,7 +206,7 @@ class TaskService:
 
     # Detect region AI calls run concurrently; DB writes stay on the main thread.
     def _detect_regions_concurrent(self, task: CompareTask) -> None:
-        provider = self._get_provider()
+        provider = self._get_provider_for_task(task)
         pages = self.db.query(PdfPage).filter(
             PdfPage.file_id.in_([task.base_file_id, task.compare_file_id])
         ).all()
@@ -333,7 +363,7 @@ class TaskService:
     def _extract_elements_for_task_concurrent(
         self, task: CompareTask, context: str, use_pages: bool = False, use_regions: bool = False
     ) -> None:
-        provider = self._get_provider()
+        provider = self._get_provider_for_task(task)
         base_file, compare_file = self._get_both_files(task)
         file_infos = [
             {"id": base_file.id, "original_name": base_file.original_name},
@@ -527,7 +557,7 @@ class TaskService:
     # ─── Step 7: Compare Elements ───
     def compare_elements(self, task: CompareTask) -> None:
         self._set_status(task, "comparing_elements", 90)
-        provider = self._get_provider()
+        provider = self._get_provider_for_task(task)
 
         base_elements = self.db.query(DrawingElement).filter(
             DrawingElement.file_id == task.base_file_id

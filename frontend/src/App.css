@@ -205,6 +205,28 @@
   margin-bottom: 0 !important;
 }
 
+.source-file-card .ant-card-body {
+  padding: 16px;
+}
+
+.source-file-meta {
+  color: #667085;
+  margin-bottom: 12px;
+}
+
+.source-file-preview {
+  width: 100%;
+  height: calc(100vh - 290px);
+  min-height: 560px;
+  border: 1px solid #e6eaf2;
+  border-radius: 8px;
+  background: #f6f8fb;
+}
+
+.source-file-image {
+  object-fit: contain;
+}
+
 @media (max-width: 900px) {
   .app-header {
     height: auto;
@@ -243,5 +265,10 @@
 
   .task-action-buttons .ant-btn {
     min-width: 120px;
+  }
+
+  .source-file-preview {
+    height: 70vh;
+    min-height: 420px;
   }
 }

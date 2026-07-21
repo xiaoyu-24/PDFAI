@@ -6,6 +6,7 @@ import { useParams } from "react-router-dom";
 import { getTask, getTaskElements } from "../api/tasks";
 import PageBackButton from "../components/PageBackButton";
 import type { CompareTask, DrawingElement } from "../types";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Paragraph, Text } = Typography;
 
@@ -30,9 +31,9 @@ export default function ElementsPage() {
   const [manualOnly, setManualOnly] = useState(false);
   const [keyword, setKeyword] = useState("");
 
-  const loadElements = useCallback(async () => {
+  const loadElements = useCallback(async (silent = false) => {
     if (!Number.isFinite(numericTaskId)) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const params: Record<string, string> = {};
       if (category) params.category = category;
@@ -44,9 +45,9 @@ export default function ElementsPage() {
       setTask(nextTask);
       setElements(nextElements);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "获取元素清单失败");
+      if (!silent) message.error(error instanceof Error ? error.message : "获取元素清单失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [category, fileRole, numericTaskId]);
 
@@ -55,6 +56,9 @@ export default function ElementsPage() {
       void loadElements();
     });
   }, [loadElements]);
+
+  const autoRefreshElements = useCallback(() => loadElements(true), [loadElements]);
+  useAutoRefresh(autoRefreshElements, { enabled: Number.isFinite(numericTaskId) });
 
   const categories = useMemo(
     () => Array.from(new Set(elements.map((item) => item.category))).filter(Boolean),

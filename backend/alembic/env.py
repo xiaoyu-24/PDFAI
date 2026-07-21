@@ -18,6 +18,7 @@ from app.models.models import (
     ElementMatch,
     CompareDiff,
     ReviewLog,
+    AiProfile,
 )
 
 config = context.config

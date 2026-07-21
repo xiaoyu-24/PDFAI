@@ -13,6 +13,7 @@ import {
 import { Link } from "react-router-dom";
 import { deleteTask, getExportUrl, getSettings, listTasks, pauseTask, resumeTask, retryTask } from "../api/tasks";
 import type { TaskListItem } from "../types";
+import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Text } = Typography;
 
@@ -80,8 +81,8 @@ export default function DashboardPage() {
   const [pageSize, setPageSize] = useState(12);
   const [taskMaxWorkers, setTaskMaxWorkers] = useState(2);
 
-  const fetchTasks = useCallback(async () => {
-    setLoading(true);
+  const fetchTasks = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const result = await listTasks({
         status,
@@ -92,9 +93,9 @@ export default function DashboardPage() {
       setTasks(result.items);
       setTotal(result.total);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "获取任务列表失败");
+      if (!silent) message.error(error instanceof Error ? error.message : "获取任务列表失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [keyword, page, pageSize, status]);
 
@@ -103,6 +104,9 @@ export default function DashboardPage() {
       void fetchTasks();
     });
   }, [fetchTasks]);
+
+  const autoRefreshTasks = useCallback(() => fetchTasks(true), [fetchTasks]);
+  useAutoRefresh(autoRefreshTasks);
 
   useEffect(() => {
     queueMicrotask(async () => {
