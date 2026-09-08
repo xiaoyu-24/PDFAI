@@ -15,6 +15,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
@@ -28,12 +29,33 @@ import {
   updateSettings,
 } from "../api/tasks";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
-import type { AiProfile, AiProfileListResponse, PublicSettings, SaveAiProfileRequest } from "../types";
+import type {
+  AiProfile,
+  AiProfileHealthStatus,
+  AiProfileListResponse,
+  PublicSettings,
+  SaveAiProfileRequest,
+} from "../types";
 
 const emptyProfiles: AiProfileListResponse = {
   items: [],
   active_profile_id: null,
   pending_profile_id: null,
+};
+
+const DEFAULT_PROFILE_PRIORITY = 100;
+
+const healthPresentation: Record<AiProfileHealthStatus, { color: string; label: string }> = {
+  healthy: { color: "green", label: "正常" },
+  unknown: { color: "default", label: "未检测" },
+  cooling_down: { color: "orange", label: "冷却中" },
+  unhealthy: { color: "red", label: "异常" },
+};
+
+const formatDateTime = (value: string | null): string => {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 };
 
 export default function SettingsPage() {
@@ -95,7 +117,11 @@ export default function SettingsPage() {
   const openCreateModal = () => {
     setEditingProfile(null);
     profileForm.resetFields();
-    profileForm.setFieldsValue({ timeout_seconds: 120, max_retries: 2 });
+    profileForm.setFieldsValue({
+      timeout_seconds: 120,
+      max_retries: 2,
+      priority: DEFAULT_PROFILE_PRIORITY,
+    });
     setProfileModalOpen(true);
   };
 
@@ -108,6 +134,7 @@ export default function SettingsPage() {
       api_key: "",
       timeout_seconds: profile.timeout_seconds,
       max_retries: profile.max_retries,
+      priority: profile.priority ?? DEFAULT_PROFILE_PRIORITY,
     });
     setProfileModalOpen(true);
   };
@@ -179,6 +206,43 @@ export default function SettingsPage() {
     { title: "模型", dataIndex: "model" },
     { title: "API 地址", dataIndex: "base_url", ellipsis: true },
     {
+      title: "切换优先级",
+      width: 100,
+      render: (_: unknown, profile: AiProfile) => profile.priority ?? DEFAULT_PROFILE_PRIORITY,
+    },
+    {
+      title: "健康状态",
+      width: 190,
+      render: (_: unknown, profile: AiProfile) => {
+        const presentation =
+          healthPresentation[profile.health_status] ?? healthPresentation.unknown;
+        return (
+          <Space direction="vertical" size={2}>
+            <Tag color={presentation.color}>{presentation.label}</Tag>
+            {profile.health_status === "cooling_down" && profile.cooldown_until && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                冷却至 {formatDateTime(profile.cooldown_until)}
+              </Typography.Text>
+            )}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              最近检查 {formatDateTime(profile.last_health_checked_at)}
+            </Typography.Text>
+            {profile.last_health_error && (
+              <Tooltip title={profile.last_health_error}>
+                <Typography.Text
+                  type="danger"
+                  style={{ fontSize: 12, maxWidth: 170, display: "block" }}
+                  ellipsis
+                >
+                  {profile.last_health_error}
+                </Typography.Text>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
+    },
+    {
       title: "调用策略",
       render: (_: unknown, profile: AiProfile) => `${profile.timeout_seconds} 秒 / 重试 ${profile.max_retries} 次`,
     },
@@ -228,6 +292,9 @@ export default function SettingsPage() {
             style={{ marginBottom: 12 }}
           />
         )}
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          数值越小越优先；任务绑定配置不可用时按此顺序自动切换。切换只影响当前任务，不会改变“当前使用”的配置。
+        </Typography.Paragraph>
         <Table rowKey="id" size="small" pagination={false} dataSource={profiles.items} columns={columns} />
       </Card>
 
@@ -268,8 +335,18 @@ export default function SettingsPage() {
             <Input.Password autoComplete="new-password" />
           </Form.Item>
           <Row gutter={16}>
-            <Col span={12}><Form.Item label="超时（秒）" name="timeout_seconds" rules={[{ required: true, message: "必填" }]}><InputNumber min={10} style={{ width: "100%" }} /></Form.Item></Col>
-            <Col span={12}><Form.Item label="重试次数" name="max_retries" rules={[{ required: true, message: "必填" }]}><InputNumber min={0} max={10} style={{ width: "100%" }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="超时（秒）" name="timeout_seconds" rules={[{ required: true, message: "必填" }]}><InputNumber min={10} style={{ width: "100%" }} /></Form.Item></Col>
+            <Col span={8}><Form.Item label="重试次数" name="max_retries" rules={[{ required: true, message: "必填" }]}><InputNumber min={0} max={10} style={{ width: "100%" }} /></Form.Item></Col>
+            <Col span={8}>
+              <Form.Item
+                label="故障切换优先级"
+                name="priority"
+                rules={[{ required: true, message: "必填" }]}
+                extra="数值越小越优先"
+              >
+                <InputNumber min={1} max={9999} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
           </Row>
         </Form>
       </Modal>

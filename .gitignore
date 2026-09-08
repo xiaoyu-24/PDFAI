@@ -67,7 +67,8 @@ htmlcov/
 .pytest_cache/
 /.pytest-run*/
 pytest.xml
-backend/tests/
+# 正式 pytest 用例（backend/tests/）需要纳入版本管理，只忽略运行期临时目录。
+backend/.pytest-tmp/
 
 # ===== 编辑器 / IDE / AI 工具 =====
 .vscode/*

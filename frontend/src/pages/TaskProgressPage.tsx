@@ -42,28 +42,10 @@ import {
 import PageBackButton from "../components/PageBackButton";
 import type { CompareTask, ReportTableRow, TaskLog, LogViewMode, FullLogListResponse } from "../types";
 import { errorCategoryLabel, eventTypeLabel, logLevelLabel, taskStageLabel } from "../utils/logLabels";
+import { isTaskActive } from "../utils/taskStatus";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
 
 const { Text } = Typography;
-
-const ACTIVE_STATUSES = new Set([
-  "queued",
-  "uploaded",
-  "rendering_pages",
-  "rendered",
-  "detecting_regions",
-  "regions_detected",
-  "cropping_regions",
-  "regions_cropped",
-  "extracting_full_page_elements",
-  "full_page_elements_skipped",
-  "extracting_region_elements",
-  "region_elements_skipped",
-  "merging_elements",
-  "saving_elements",
-  "comparing_elements",
-  "saving_diffs",
-]);
 
 const STAGES = [
   { keys: ["queued", "uploaded", "paused"], title: "上传/排队" },
@@ -311,7 +293,7 @@ export default function TaskProgressPage() {
             ) : (
               <Button
                 icon={<PauseCircleOutlined />}
-                disabled={!ACTIVE_STATUSES.has(task.status)}
+                disabled={!isTaskActive(task.status)}
                 onClick={() => void handlePause()}
               >
                 暂停

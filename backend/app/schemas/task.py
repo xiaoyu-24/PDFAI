@@ -26,7 +26,6 @@ class TaskResponse(BaseModel):
     compare_page_count: int | None = None
     current_step_label: str | None = None
     current_step_hint: str | None = None
-    failed_stage: str | None = None
     error_hint: str | None = None
     recognition_strategy: dict | None = None
 

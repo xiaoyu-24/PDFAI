@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm import Session, joinedload, object_session
 
 from app.core.config import get_settings
 from app.db.session import get_db
@@ -54,6 +54,8 @@ def _run_full_pipeline(task_id: int) -> None:
             return
 
         run_id = _latest_task_run_id(db, task.id)
+        # 注入 run_id，让 AI 配置自动切换事件能写进本次运行的任务日志。
+        service.run_id = run_id
         # 创建完整日志写入器
         logs_root = get_settings().get_storage_path("logs")
         detail_writer = TaskDetailLogWriter(logs_root, db)
@@ -397,7 +399,7 @@ def _error_hint(summary: str | None) -> str | None:
     if not summary:
         return None
     text = summary.lower()
-    if "pdf" in text or "文件" in summary or "鏂囦欢" in summary:
+    if "pdf" in text or "文件" in summary:
         return "请重新上传有效 PDF 文件。"
     if "api" in text or "key" in text or "model" in text or "ai" in text:
         return "请检查系统设置中的 AI 配置和模型能力。"
@@ -499,12 +501,25 @@ def list_tasks(
 
     total = query.count()
     tasks = (
-        query.order_by(CompareTask.created_at.desc(), CompareTask.id.desc())
+        query.options(
+            joinedload(CompareTask.base_file),
+            joinedload(CompareTask.compare_file),
+        )
+        .order_by(CompareTask.created_at.desc(), CompareTask.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
-    items = [_task_to_list_item(task, db) for task in tasks]
+    rows_by_task = ReportService(db).build_diff_report_rows_by_task([task.id for task in tasks])
+    observability_by_task = _bulk_task_observability(db, tasks)
+    items = [
+        _task_to_list_item(
+            task,
+            rows_by_task.get(task.id, []),
+            observability_by_task.get(task.id),
+        )
+        for task in tasks
+    ]
     return TaskListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
@@ -953,7 +968,7 @@ def export_final(task_id: int, db: Session = Depends(get_db)):
     )
 
 
-def _task_to_response(task) -> TaskResponse:
+def _task_to_response(task, observability: dict | None = None) -> TaskResponse:
     settings = get_settings()
     label, hint = STEP_INFO.get(task.status, (task.status, None))
     if task.status == "queued":
@@ -961,7 +976,8 @@ def _task_to_response(task) -> TaskResponse:
             "系统会在并发名额可用时自动开始处理，"
             f"最多同时运行 {settings.TASK_MAX_WORKERS} 个任务。"
         )
-    observability = _task_observability(task)
+    if observability is None:
+        observability = _task_observability(task)
     failed_stage = task.failed_stage if task.status == "failed" else None
     return TaskResponse(
         id=task.id, task_no=task.task_no,
@@ -1016,9 +1032,64 @@ def _task_observability(task) -> dict:
     }
 
 
-def _task_to_list_item(task, db: Session) -> TaskListItemResponse:
-    response = _task_to_response(task)
-    report_rows = ReportService(db).build_diff_report_rows(task.id)
+def _bulk_task_observability(db: Session, tasks: list[CompareTask]) -> dict[int, dict]:
+    """批量聚合列表页的 AI 调用统计，替代逐个任务各查三次。"""
+    task_id_by_file: dict[int, int] = {}
+    for task in tasks:
+        for file_id in (task.base_file_id, task.compare_file_id):
+            if file_id is not None:
+                task_id_by_file[file_id] = task.id
+    result = {
+        task.id: {"ai_call_count": 0, "ai_total_duration_ms": 0, "last_ai_error": None}
+        for task in tasks
+    }
+    if not task_id_by_file:
+        return result
+
+    file_ids = list(task_id_by_file)
+    totals = (
+        db.query(
+            AiExtractionRun.file_id,
+            func.count(AiExtractionRun.id),
+            func.coalesce(func.sum(AiExtractionRun.duration_ms), 0),
+        )
+        .filter(AiExtractionRun.file_id.in_(file_ids))
+        .group_by(AiExtractionRun.file_id)
+        .all()
+    )
+    for file_id, call_count, total_duration in totals:
+        entry = result[task_id_by_file[file_id]]
+        entry["ai_call_count"] += int(call_count or 0)
+        entry["ai_total_duration_ms"] += int(total_duration or 0)
+
+    # 与单任务查询保持同样的排序，因此每个任务第一次出现的就是最近一次失败。
+    failed_runs = (
+        db.query(AiExtractionRun.file_id, AiExtractionRun.error_message)
+        .filter(
+            AiExtractionRun.file_id.in_(file_ids),
+            AiExtractionRun.status == "failed",
+            AiExtractionRun.error_message.isnot(None),
+        )
+        .order_by(
+            AiExtractionRun.finished_at.is_(None).asc(),
+            AiExtractionRun.finished_at.desc(),
+            AiExtractionRun.id.desc(),
+        )
+        .all()
+    )
+    for file_id, error_message in failed_runs:
+        entry = result[task_id_by_file[file_id]]
+        if entry["last_ai_error"] is None:
+            entry["last_ai_error"] = error_message
+    return result
+
+
+def _task_to_list_item(
+    task,
+    report_rows: list,
+    observability: dict | None = None,
+) -> TaskListItemResponse:
+    response = _task_to_response(task, observability)
     counts = {
         "diff_count": len(report_rows),
         "high_risk_count": sum(1 for row in report_rows if row.risk_label == "高"),

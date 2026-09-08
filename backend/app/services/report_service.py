@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.models import CompareDiff
 
@@ -169,12 +169,35 @@ class ReportService:
         self.db = db
 
     def build_diff_report_rows(self, task_id: int) -> list[ReportRow]:
+        return self.build_diff_report_rows_by_task([task_id]).get(task_id, [])
+
+    def build_diff_report_rows_by_task(self, task_ids: list[int]) -> dict[int, list[ReportRow]]:
+        """一次查出多个任务的差异行。
+
+        分类和证据都会读取 base_element/compare_element，这里预加载它们，
+        否则每条差异都会各自触发一次懒加载查询。
+        """
+        if not task_ids:
+            return {}
         diffs = (
             self.db.query(CompareDiff)
-            .filter(CompareDiff.compare_task_id == task_id)
+            .options(
+                selectinload(CompareDiff.base_element),
+                selectinload(CompareDiff.compare_element),
+            )
+            .filter(CompareDiff.compare_task_id.in_(task_ids))
             .order_by(CompareDiff.id.asc())
             .all()
         )
+        diffs_by_task: dict[int, list[CompareDiff]] = {task_id: [] for task_id in task_ids}
+        for diff in diffs:
+            diffs_by_task.setdefault(diff.compare_task_id, []).append(diff)
+        return {
+            task_id: self._rows_for_diffs(task_diffs)
+            for task_id, task_diffs in diffs_by_task.items()
+        }
+
+    def _rows_for_diffs(self, diffs: list[CompareDiff]) -> list[ReportRow]:
         grouped: dict[str, list[CompareDiff]] = {section: [] for section in SECTION_ORDER}
         for diff in diffs:
             if self._should_exclude(diff):

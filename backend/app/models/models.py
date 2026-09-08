@@ -178,6 +178,11 @@ class AiProfile(Base):
     is_active = Column(Boolean, nullable=False, default=False)
     is_pending = Column(Boolean, nullable=False, default=False)
     is_enabled = Column(Boolean, nullable=False, default=True)
+    priority = Column(Integer, nullable=False, default=100)
+    health_status = Column(String(16), nullable=False, default="unknown")
+    cooldown_until = Column(DateTime, nullable=True)
+    last_health_error = Column(Text, nullable=True)
+    last_health_checked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 

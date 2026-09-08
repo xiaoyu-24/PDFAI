@@ -32,7 +32,6 @@ class OpenAICompatibleProvider(VisionModelProvider):
         self._max_retries = max_retries or settings.AI_MAX_RETRIES
         self._image_max_edge = settings.AI_IMAGE_MAX_EDGE
         self._image_jpeg_quality = settings.AI_IMAGE_JPEG_QUALITY
-        self._client = self._new_client()
         self._output_dir = settings.get_storage_path("ai_outputs")
 
     def detect_layout(
@@ -144,29 +143,30 @@ class OpenAICompatibleProvider(VisionModelProvider):
         last_error = None
         for attempt in range(self._max_retries + 1):
             try:
-                resp = self._client.post(
-                    self._chat_completions_url,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                )
-                try:
-                    resp.raise_for_status()
-                except Exception as exc:
-                    body = getattr(resp, "text", "")
-                    if body:
-                        raise Exception(f"{exc}; response body: {body[:1000]}") from exc
-                    raise
-                content = resp.json()["choices"][0]["message"]["content"]
+                # 一个 provider 实例会被同一任务的多个工作线程共用，因此每次尝试独占一个
+                # 客户端：共用连接池时，任一线程重建客户端都会打断其他线程正在进行的请求。
+                with self._new_client() as client:
+                    resp = client.post(
+                        self._chat_completions_url,
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    try:
+                        resp.raise_for_status()
+                    except Exception as exc:
+                        body = getattr(resp, "text", "")
+                        if body:
+                            raise Exception(f"{exc}; response body: {body[:1000]}") from exc
+                        raise
+                    content = resp.json()["choices"][0]["message"]["content"]
                 self._save_raw_output(system_prompt[:30], content)
                 return content
             except Exception as e:
                 last_error = e
                 if attempt < self._max_retries:
-                    if self._is_transport_error(e):
-                        self._reset_client()
                     time.sleep(1 * (attempt + 1))
                 else:
                     raise Exception(
@@ -177,12 +177,6 @@ class OpenAICompatibleProvider(VisionModelProvider):
 
     def _new_client(self) -> httpx.Client:
         return httpx.Client(timeout=self._timeout)
-
-    def _reset_client(self) -> None:
-        close = getattr(self._client, "close", None)
-        if callable(close):
-            close()
-        self._client = self._new_client()
 
     def _is_transport_error(self, exc: Exception) -> bool:
         if isinstance(exc, httpx.TransportError):

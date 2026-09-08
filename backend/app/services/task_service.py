@@ -5,7 +5,10 @@ import datetime
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
+
+if TYPE_CHECKING:
+    from app.ai.failover_provider import FailoverVisionProvider
 
 from PIL import Image
 from sqlalchemy.orm import Session
@@ -13,12 +16,15 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings, Settings
 from app.models.models import (
     PdfFile, PdfPage, PageRegion, AiExtractionRun,
-    DrawingElement, CompareTask, ElementMatch, CompareDiff, AiProfile,
+    DrawingElement, CompareTask, ElementMatch, CompareDiff,
 )
 from app.services.pdf_service import PdfRenderService, compute_hash
 from app.services.crop_service import CropService
 from app.ai.base import VisionModelProvider
 from app.services.ai_profile_service import AiProfileService
+
+# 单次对比请求允许的元素清单字符数；超出后按类别分批，避免超出模型上下文上限。
+COMPARISON_PAYLOAD_CHAR_BUDGET = 60_000
 
 
 class TaskControlInterrupt(RuntimeError):
@@ -39,6 +45,8 @@ def classify_ai_error(error: Exception | str) -> str:
         return f"模型不支持图片: {message}。建议：检查当前模型是否支持视觉输入。"
     if any(marker in text for marker in ["json解析失败", "jsondecodeerror", "expecting value", "invalid json"]):
         return f"JSON解析失败: {message}。建议：模型返回格式不符合要求，请重试或调整模型配置。"
+    if any(marker in text for marker in ["缺少 category", "不是对象"]):
+        return f"模型输出字段缺失: {message}。建议：模型未按要求返回元素字段，请重试或更换视觉能力更强的模型。"
     if any(marker in text for marker in ["未识别到任何元素", "缺少 elements", "空结果", "empty result"]):
         return f"空结果: {message}。建议：检查图纸清晰度、识别策略或开启区域小图识别。"
     if any(marker in text for marker in ["timeout", "timed out", "超时", "429", "rate limit", "限流"]):
@@ -65,6 +73,13 @@ class TaskService:
         self.db = db
         self.settings = settings or get_settings()
         self._provider_task: CompareTask | None = None
+        # 本次运行的 run_id，由流水线注入；只用于把故障切换写进 TaskLog。
+        self.run_id: str | None = None
+        self._failover_provider: "FailoverVisionProvider | None" = None
+        # 显式注入的 Provider，用于测试与将来可能的外部编排；为空时按配置自行构建。
+        self._provider_override: VisionModelProvider | None = None
+        # 本次运行中已经成功过的配置。后续阶段优先沿用它，避免每个阶段都先打故障主配置。
+        self._preferred_profile_id: int | None = None
 
     def create_task(
         self,
@@ -126,39 +141,128 @@ class TaskService:
     def _save_pdf_file(self, pdf_bytes: bytes, filename: str, file_role: str) -> PdfFile:
         return self._save_input_file(pdf_bytes, filename, file_role, "pdf")
 
+    def bind_run_context(self, *, run_id: str | None) -> None:
+        """注入本次运行的 run_id，让故障切换事件能写进对应的任务日志。"""
+        self.run_id = run_id
+
+    def set_provider(self, provider: VisionModelProvider | None) -> None:
+        """显式指定本次运行使用的 Provider，跳过按配置构建候选链的过程。"""
+        self._provider_override = provider
+
     def _get_provider_for_task(self, task: CompareTask) -> VisionModelProvider:
         self._provider_task = task
         return self._get_provider()
 
     def _get_provider(self) -> VisionModelProvider:
+        """构建本阶段使用的 Provider。
+
+        自动切换开启且存在多个真实候选时返回 FailoverVisionProvider；只有一个候选时直接返回
+        原始 Provider，让错误文案和 _model 记录与开启故障切换之前完全一致。
+        """
+        override = self._provider_override
+        if override is not None:
+            from app.ai.failover_provider import FailoverVisionProvider as _Failover
+
+            # 注入的包装器同样需要在阶段结束时被 drain。
+            self._failover_provider = override if isinstance(override, _Failover) else None
+            return override
+
         task = self._provider_task
-        if task is not None and task.ai_profile_id is not None:
-            profile_service = AiProfileService(self.db, settings=self.settings)
-            profile = self.db.query(AiProfile).filter(AiProfile.id == task.ai_profile_id).first()
-            if profile and self._has_real_profile_config(profile, profile_service):
-                from app.ai.openai_provider import OpenAICompatibleProvider
-                return OpenAICompatibleProvider(
-                    base_url=profile.base_url,
-                    api_key=profile_service.decrypt_api_key(profile),
-                    model=profile.model,
-                    timeout_seconds=profile.timeout_seconds,
-                    max_retries=profile.max_retries,
-                )
-        if self.settings.has_real_ai_config:
-            from app.ai.openai_provider import OpenAICompatibleProvider
-            return OpenAICompatibleProvider()
+        profile_service = AiProfileService(self.db, settings=self.settings)
+        candidates = profile_service.build_provider_candidates(
+            task, preferred_profile_id=self._preferred_profile_id
+        )
 
-        from app.ai.mock_provider import MockVisionProvider
-        return MockVisionProvider()
+        self._failover_provider = None
+        if not candidates:
+            # build_provider_candidates 始终至少给一个候选；兜底保持旧行为。
+            from app.ai.mock_provider import MockVisionProvider
+            return MockVisionProvider()
 
-    @staticmethod
-    def _has_real_profile_config(profile, profile_service: AiProfileService) -> bool:
-        api_key = profile_service.decrypt_api_key(profile)
-        return all([
-            profile.base_url and profile.base_url != "https://example.com/v1",
-            api_key and api_key != "replace-with-real-key",
-            profile.model and profile.model != "replace-with-vision-model",
-        ])
+        if not self.settings.AI_ENABLE_AUTO_FAILOVER or len(candidates) == 1:
+            return candidates[0].factory()
+
+        from app.ai.failover_provider import FailoverVisionProvider
+        configured_max = getattr(self.settings, "AI_FAILOVER_MAX_SWITCHES", 0) or 0
+        provider = FailoverVisionProvider(
+            candidates,
+            # 0 表示"不额外限制"，翻译成 None 让候选链自己决定上限。
+            max_switches=None if configured_max <= 0 else configured_max,
+            include_capability_errors=getattr(
+                self.settings, "AI_FAILOVER_ON_VISION_UNSUPPORTED", False
+            ),
+        )
+        self._failover_provider = provider
+        return provider
+
+    def _flush_failover_outcome(self, stage: str) -> None:
+        """把本阶段累积的切换事件与健康状态落库。只在主线程调用。
+
+        无论阶段成功还是失败都要调用：失败配置需要进入 cooldown，成功配置需要恢复健康，
+        切换事件需要写进 TaskLog 并驱动后续的人工复核标记。
+        """
+        provider = self._failover_provider
+        if provider is None:
+            return
+        try:
+            outcome = provider.drain_outcome()
+        except Exception:
+            return
+        if not outcome.events and not outcome.failed_profiles and not outcome.succeeded_profile_ids:
+            return
+
+        try:
+            AiProfileService(self.db, settings=self.settings).apply_failover_outcome(outcome)
+        except Exception:
+            self._safe_rollback()
+
+        # 后续阶段优先沿用这次真正成功的配置。
+        for profile_id in outcome.succeeded_profile_ids:
+            if profile_id is not None and profile_id not in outcome.failed_profiles:
+                self._preferred_profile_id = profile_id
+                break
+
+        for event in outcome.events:
+            self._log_failover_event(stage, event)
+
+    def _log_failover_event(self, stage: str, event) -> None:
+        task = self._provider_task
+        if task is None or self.run_id is None:
+            return
+        from app.services.task_log_service import TaskLogService
+
+        try:
+            TaskLogService(self.db).safe_record(
+                task_id=task.id,
+                run_id=self.run_id,
+                stage=stage,
+                component="model_api",
+                event_type="failover",
+                level="warning",
+                status="degraded",
+                message=f"AI配置不可用，已自动切换：{event.from_name} → {event.to_name}",
+                error_category="model_api",
+                error_detail=event.error,
+                is_degraded=True,
+                fallback_action=f"AI配置从「{event.from_name}」切换到「{event.to_name}」继续执行",
+                # 只记 id/name，绝不记 API Key。
+                metadata_json={
+                    "from_profile_id": event.from_profile_id,
+                    "from_profile_name": event.from_name,
+                    "to_profile_id": event.to_profile_id,
+                    "to_profile_name": event.to_name,
+                },
+            )
+        except Exception:
+            self._safe_rollback()
+
+    def _safe_rollback(self) -> None:
+        rollback = getattr(self.db, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                pass
 
     # ─── Step 1: Render Pages ───
     def render_pages(self, task: CompareTask) -> None:
@@ -206,6 +310,12 @@ class TaskService:
 
     # Detect region AI calls run concurrently; DB writes stay on the main thread.
     def _detect_regions_concurrent(self, task: CompareTask) -> None:
+        try:
+            return self._detect_regions_concurrent_inner(task)
+        finally:
+            self._flush_failover_outcome("detecting_regions")
+
+    def _detect_regions_concurrent_inner(self, task: CompareTask) -> None:
         provider = self._get_provider_for_task(task)
         pages = self.db.query(PdfPage).filter(
             PdfPage.file_id.in_([task.base_file_id, task.compare_file_id])
@@ -363,6 +473,19 @@ class TaskService:
     def _extract_elements_for_task_concurrent(
         self, task: CompareTask, context: str, use_pages: bool = False, use_regions: bool = False
     ) -> None:
+        stage = (
+            "extracting_full_page_elements" if context == "full_page" else "extracting_region_elements"
+        )
+        try:
+            return self._extract_elements_for_task_concurrent_inner(
+                task, context, use_pages=use_pages, use_regions=use_regions
+            )
+        finally:
+            self._flush_failover_outcome(stage)
+
+    def _extract_elements_for_task_concurrent_inner(
+        self, task: CompareTask, context: str, use_pages: bool = False, use_regions: bool = False
+    ) -> None:
         provider = self._get_provider_for_task(task)
         base_file, compare_file = self._get_both_files(task)
         file_infos = [
@@ -403,7 +526,7 @@ class TaskService:
         self.db.commit()
 
         if not sources:
-            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: \u6ca1\u6709\u53ef\u8bc6\u522b\u7684\u56fe\u50cf\u6e90")
+            self._fail(task, f"{context}元素识别失败: 没有可识别的图像源")
             return
 
         for job in self._run_extract_element_jobs(provider, context, sources):
@@ -418,9 +541,9 @@ class TaskService:
                 result = job["result"]
                 elements = result.get("elements") if isinstance(result, dict) else None
                 if not isinstance(elements, list):
-                    raise ValueError("AI\u8fd4\u56de\u7f3a\u5c11 elements \u6570\u7ec4")
+                    raise ValueError("AI返回缺少 elements 数组")
                 if not elements:
-                    raise ValueError("AI鏈瘑鍒埌浠讳綍鍏冪礌")
+                    raise ValueError("AI未识别到任何元素")
 
                 run = AiExtractionRun(
                     file_id=source["file_id"],
@@ -441,11 +564,11 @@ class TaskService:
                 added_count = 0
                 for elem_data in elements:
                     if not isinstance(elem_data, dict):
-                        raise ValueError("AI\u8fd4\u56de\u7684\u5143\u7d20\u4e0d\u662f\u5bf9\u8c61")
+                        raise ValueError("AI返回的元素不是对象")
                     category = elem_data.get("category")
                     element_name = elem_data.get("element_name")
                     if not category or not element_name:
-                        raise ValueError("AI杩斿洖鐨勫厓绱犵己灏?category 鎴?element_name")
+                        raise ValueError("AI返回的元素缺少 category 或 element_name")
                     importance = elem_data.get("importance", "medium")
                     if importance not in {"high", "medium", "low"}:
                         importance = "medium"
@@ -490,14 +613,14 @@ class TaskService:
                 errors.append(f"{source['original_name']}/{source_name}: {formatted_error}")
 
         if errors:
-            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: {'; '.join(errors[:3])}")
+            self._fail(task, f"{context}元素识别失败: {'; '.join(errors[:3])}")
             return
         missing_files = [
             file_info["original_name"] for file_info in file_infos
             if file_element_counts.get(file_info["id"], 0) == 0
         ]
         if missing_files:
-            self._fail(task, f"{context}\u5143\u7d20\u8bc6\u522b\u5931\u8d25: {', '.join(missing_files)} \u672a\u63d0\u53d6\u5230\u5143\u7d20")
+            self._fail(task, f"{context}元素识别失败: {', '.join(missing_files)} 未提取到元素")
 
     def _run_extract_element_jobs(
         self, provider: VisionModelProvider, context: str, sources: list[dict[str, Any]]
@@ -556,46 +679,161 @@ class TaskService:
 
     # ─── Step 7: Compare Elements ───
     def compare_elements(self, task: CompareTask) -> None:
+        try:
+            return self._compare_elements_inner(task)
+        finally:
+            self._flush_failover_outcome("comparing_elements")
+
+    def _compare_elements_inner(self, task: CompareTask) -> None:
         self._set_status(task, "comparing_elements", 90)
         provider = self._get_provider_for_task(task)
 
-        base_elements = self.db.query(DrawingElement).filter(
-            DrawingElement.file_id == task.base_file_id
-        ).all()
-        compare_elements = self.db.query(DrawingElement).filter(
-            DrawingElement.file_id == task.compare_file_id
-        ).all()
-
-        base_list = [{"id": f"base:{e.id}", "element_name": e.element_name,
-                       "raw_value": e.raw_value, "normalized_value": e.normalized_value,
-                       "category": e.category, "importance": e.importance,
-                       "confidence": e.confidence} for e in base_elements]
-        compare_list = [{"id": f"compare:{e.id}", "element_name": e.element_name,
-                          "raw_value": e.raw_value, "normalized_value": e.normalized_value,
-                          "category": e.category, "importance": e.importance,
-                          "confidence": e.confidence} for e in compare_elements]
+        base_list = self._comparison_payload(task.base_file_id, "base")
+        compare_list = self._comparison_payload(task.compare_file_id, "compare")
         task_id = task.id
-        started_at = datetime.datetime.now()
+        compare_file_id = task.compare_file_id
         self.db.commit()
 
-        try:
-            result = provider.compare_elements(base_list, compare_list)
-            finished_at = datetime.datetime.now()
+        batches = self._comparison_batches(base_list, compare_list)
+        if not batches:
+            return self._fail(task, "元素对比失败: 没有可对比的元素")
+
+        results: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for batch_base, batch_compare in batches:
+            started_at = datetime.datetime.now()
+            error_message = None
+            try:
+                results.append(provider.compare_elements(batch_base, batch_compare))
+            except Exception as exc:
+                error_message = classify_ai_error(exc)
+                errors.append(error_message)
             self.db.add(self._build_ai_run(
                 provider=provider,
-                file_id=task.compare_file_id,
+                file_id=compare_file_id,
                 page_id=None,
                 region_id=None,
                 input_type="merge",
-                status="success",
+                status="failed" if error_message else "success",
                 started_at=started_at,
-                finished_at=finished_at,
+                finished_at=datetime.datetime.now(),
+                error_message=error_message,
             ))
-            self.db.flush()
-            base_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in base_list}
-            compare_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in compare_list}
-            matches_by_refs: dict[tuple[int | None, int | None], ElementMatch] = {}
+            self.db.commit()
 
+        if not results:
+            distinct_errors = list(dict.fromkeys(errors))
+            return self._fail(task, f"元素对比失败: {'; '.join(distinct_errors[:3])}")
+
+        degraded = bool(errors)
+        try:
+            self._save_comparison_results(
+                task_id, base_list, compare_list, results, degraded=degraded
+            )
+        except Exception as exc:
+            self.db.rollback()
+            return self._fail(task, f"元素对比失败: {classify_ai_error(exc)}")
+
+        self._set_status(task, "completed", 100)
+        task.completed_at = datetime.datetime.now()
+        if degraded:
+            task.summary = (
+                f"部分批次对比失败（{len(errors)}/{len(batches)}），"
+                "已保留成功批次的结果并标记为需人工确认。"
+            )
+        self.db.commit()
+
+    def _comparison_payload(self, file_id: int, ref_prefix: str) -> list[dict[str, Any]]:
+        elements = self.db.query(DrawingElement).filter(DrawingElement.file_id == file_id).all()
+        return [
+            {
+                "id": f"{ref_prefix}:{element.id}",
+                "element_name": element.element_name,
+                "raw_value": element.raw_value,
+                "normalized_value": element.normalized_value,
+                "category": element.category,
+                "importance": element.importance,
+                "confidence": element.confidence,
+            }
+            for element in elements
+        ]
+
+    def _comparison_batches(
+        self, base_list: list[dict[str, Any]], compare_list: list[dict[str, Any]]
+    ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        """清单整体不大时保持单次调用；超出预算才分批。
+
+        先按类别切分，保证同类元素留在同一次请求里；单个类别自身超预算时再按元素名称
+        细分，让同名元素（语义匹配最主要的信号）仍然落在同一批。
+        """
+        if not base_list and not compare_list:
+            return []
+        if self._payload_chars(base_list, compare_list) <= COMPARISON_PAYLOAD_CHAR_BUDGET:
+            return [(base_list, compare_list)]
+
+        atoms: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+        for group_base, group_compare in self._group_by(base_list, compare_list, "category"):
+            if self._payload_chars(group_base, group_compare) <= COMPARISON_PAYLOAD_CHAR_BUDGET:
+                atoms.append((group_base, group_compare))
+                continue
+            atoms.extend(self._group_by(group_base, group_compare, "element_name"))
+        return self._pack_batches(atoms)
+
+    @staticmethod
+    def _group_by(
+        base_list: list[dict[str, Any]], compare_list: list[dict[str, Any]], key: str
+    ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        groups: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+        for side, items in enumerate((base_list, compare_list)):
+            for item in items:
+                bucket = groups.get(str(item.get(key) or ""))
+                if bucket is None:
+                    bucket = ([], [])
+                    groups[str(item.get(key) or "")] = bucket
+                bucket[side].append(item)
+        return list(groups.values())
+
+    def _pack_batches(
+        self, atoms: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]
+    ) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+        batches: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+        current_base: list[dict[str, Any]] = []
+        current_compare: list[dict[str, Any]] = []
+        for atom_base, atom_compare in atoms:
+            exceeds_budget = self._payload_chars(
+                current_base + atom_base, current_compare + atom_compare
+            ) > COMPARISON_PAYLOAD_CHAR_BUDGET
+            if (current_base or current_compare) and exceeds_budget:
+                batches.append((current_base, current_compare))
+                current_base, current_compare = [], []
+            current_base = current_base + atom_base
+            current_compare = current_compare + atom_compare
+        if current_base or current_compare:
+            batches.append((current_base, current_compare))
+        return batches
+
+    @staticmethod
+    def _payload_chars(
+        base_list: list[dict[str, Any]], compare_list: list[dict[str, Any]]
+    ) -> int:
+        return len(json.dumps(base_list, ensure_ascii=False)) + len(
+            json.dumps(compare_list, ensure_ascii=False)
+        )
+
+    def _save_comparison_results(
+        self,
+        task_id: int,
+        base_list: list[dict[str, Any]],
+        compare_list: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+        *,
+        degraded: bool,
+    ) -> None:
+        base_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in base_list}
+        compare_by_ref = {item["id"]: int(item["id"].split(":", 1)[1]) for item in compare_list}
+
+        for result in results:
+            matches_by_refs: dict[tuple[int | None, int | None], ElementMatch] = {}
             for match_data in result.get("matches", []):
                 base_element_id = base_by_ref.get(match_data.get("base_element_ref"))
                 compare_element_id = compare_by_ref.get(match_data.get("compare_element_ref"))
@@ -628,29 +866,8 @@ class TaskService:
                     impact=diff_data.get("impact", ""),
                     suggestion=diff_data.get("suggestion", ""),
                     confidence=diff_data.get("confidence"),
-                    need_manual_check=diff_data.get("need_manual_check", False),
+                    need_manual_check=diff_data.get("need_manual_check", False) or degraded,
                 ))
-            self.db.commit()
-        except Exception as e:
-            finished_at = datetime.datetime.now()
-            formatted_error = classify_ai_error(e)
-            self.db.rollback()
-            self.db.add(self._build_ai_run(
-                provider=provider,
-                file_id=task.compare_file_id,
-                page_id=None,
-                region_id=None,
-                input_type="merge",
-                status="failed",
-                started_at=started_at,
-                finished_at=finished_at,
-                error_message=formatted_error,
-            ))
-            self.db.commit()
-            return self._fail(task, f"元素对比失败: {formatted_error}")
-
-        self._set_status(task, "completed", 100)
-        task.completed_at = datetime.datetime.now()
         self.db.commit()
 
     # ─── Helpers ───

@@ -14,6 +14,7 @@ import { Link } from "react-router-dom";
 import { deleteTask, getExportUrl, getSettings, listTasks, pauseTask, resumeTask, retryTask } from "../api/tasks";
 import type { TaskListItem } from "../types";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
+import { isTaskActive, taskListRefreshInterval } from "../utils/taskStatus";
 
 const { Text } = Typography;
 
@@ -38,25 +39,6 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
 };
-
-const ACTIVE_STATUSES = new Set([
-  "queued",
-  "uploaded",
-  "rendering_pages",
-  "rendered",
-  "detecting_regions",
-  "regions_detected",
-  "cropping_regions",
-  "regions_cropped",
-  "extracting_full_page_elements",
-  "full_page_elements_skipped",
-  "extracting_region_elements",
-  "region_elements_skipped",
-  "merging_elements",
-  "saving_elements",
-  "comparing_elements",
-  "saving_diffs",
-]);
 
 function statusColor(status: string) {
   if (status === "completed") return "green";
@@ -106,7 +88,9 @@ export default function DashboardPage() {
   }, [fetchTasks]);
 
   const autoRefreshTasks = useCallback(() => fetchTasks(true), [fetchTasks]);
-  useAutoRefresh(autoRefreshTasks);
+  useAutoRefresh(autoRefreshTasks, {
+    intervalMs: taskListRefreshInterval(tasks.map((task) => task.status)),
+  });
 
   useEffect(() => {
     queueMicrotask(async () => {
@@ -246,7 +230,7 @@ export default function DashboardPage() {
               <Button
                 size="small"
                 icon={<PauseCircleOutlined />}
-                disabled={!ACTIVE_STATUSES.has(record.status)}
+                disabled={!isTaskActive(record.status)}
                 onClick={() => void handlePause(record.id)}
               >
                 暂停

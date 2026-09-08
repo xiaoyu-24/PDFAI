@@ -292,6 +292,8 @@ export interface UpdateSettingsRequest {
   ai_image_jpeg_quality?: number;
 }
 
+export type AiProfileHealthStatus = "healthy" | "unknown" | "cooling_down" | "unhealthy";
+
 export interface AiProfile {
   id: number;
   name: string;
@@ -303,6 +305,13 @@ export interface AiProfile {
   is_active: boolean;
   is_pending: boolean;
   is_enabled: boolean;
+  /** 故障切换优先级，数值越小越优先。 */
+  priority: number;
+  /** 只读健康状态，由后端根据调用结果与冷却时间推导。 */
+  health_status: AiProfileHealthStatus;
+  cooldown_until: string | null;
+  last_health_error: string | null;
+  last_health_checked_at: string | null;
 }
 
 export interface AiProfileListResponse {
@@ -318,6 +327,7 @@ export interface SaveAiProfileRequest {
   model: string;
   timeout_seconds: number;
   max_retries: number;
+  priority?: number;
 }
 
 export interface AiProfileActivationResponse {

@@ -57,6 +57,7 @@ class AiProfileCreateRequest(BaseModel):
     model: str = Field(min_length=1, max_length=256)
     timeout_seconds: int = Field(default=120, ge=10)
     max_retries: int = Field(default=2, ge=0, le=10)
+    priority: int = Field(default=100, ge=1, le=9999)
 
 
 class AiProfileUpdateRequest(BaseModel):
@@ -66,6 +67,7 @@ class AiProfileUpdateRequest(BaseModel):
     model: Optional[str] = Field(default=None, min_length=1, max_length=256)
     timeout_seconds: Optional[int] = Field(default=None, ge=10)
     max_retries: Optional[int] = Field(default=None, ge=0, le=10)
+    priority: Optional[int] = Field(default=None, ge=1, le=9999)
 
 
 class AiProfileResponse(BaseModel):
@@ -79,6 +81,13 @@ class AiProfileResponse(BaseModel):
     is_active: bool
     is_pending: bool
     is_enabled: bool
+    # 故障切换优先级：数值越小越优先。
+    priority: int
+    # 以下健康字段只读，由自动故障切换维护。last_health_error 已脱敏并截断。
+    health_status: str
+    cooldown_until: Optional[str] = None
+    last_health_error: Optional[str] = None
+    last_health_checked_at: Optional[str] = None
 
 
 class AiProfileListResponse(BaseModel):

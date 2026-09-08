@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     AI_ENABLE_REGION_EXTRACTION: bool = False
     AI_IMAGE_MAX_EDGE: int = Field(default=1600, ge=512, le=8000)
     AI_IMAGE_JPEG_QUALITY: int = Field(default=75, ge=40, le=95)
+    AI_ENABLE_AUTO_FAILOVER: bool = True
+    AI_FAILOVER_COOLDOWN_SECONDS: int = Field(default=300, ge=0, le=86400)
+    AI_FAILOVER_MAX_SWITCHES: int = Field(default=0, ge=0, le=20)
+    AI_FAILOVER_ON_VISION_UNSUPPORTED: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

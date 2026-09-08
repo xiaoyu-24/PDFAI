@@ -6,6 +6,7 @@ import { Link, useLocation } from "react-router-dom";
 import { listTasks } from "../api/tasks";
 import type { TaskListItem } from "../types";
 import { useAutoRefresh } from "../hooks/useAutoRefresh";
+import { taskListRefreshInterval } from "../utils/taskStatus";
 
 const { Text } = Typography;
 
@@ -81,7 +82,9 @@ export default function TaskPickerPage() {
   }, [fetchTasks]);
 
   const autoRefreshTasks = useCallback(() => fetchTasks(true), [fetchTasks]);
-  useAutoRefresh(autoRefreshTasks);
+  useAutoRefresh(autoRefreshTasks, {
+    intervalMs: taskListRefreshInterval(tasks.map((task) => task.status)),
+  });
 
   const columns: ColumnsType<TaskListItem> = useMemo(
     () => [
