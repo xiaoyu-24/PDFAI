@@ -1,149 +1,208 @@
-# PDFAI - 智能产品图纸对比与审核系统
+# PDFAI — 智能图纸对比与审核系统
 
-PDFAI 是一个专为工程和制造行业设计的 **AI 辅助图纸对比工具**。它能够自动分析两份产品图纸（如客户原始图纸与供应商打样图纸、旧版与新版图纸），智能提取关键要素（尺寸、BOM、技术要求等），并生成高可视化的差异审核报告。
+**简体中文** | [English](README.en.md)
 
-## ✨ 核心功能
+PDFAI 是面向工程与制造场景的 AI 辅助图纸对比工具。上传基准图纸和对比图纸后，系统提取尺寸、文本、公差与技术要求，生成结构化差异，支持人工复核和 Excel 导出，适用于客户与供应商图纸核对、图纸版本审核等场景。
 
-- 📄 **高清 PDF 渲染与布局识别**：自动将 PDF 图纸转换为高清图像，并利用视觉 AI 识别主视图、技术要求、标题栏等重点区域。
-- 🔍 **图纸元素智能提取**：针对整页或局部裁剪区域，结构化提取图纸上的工程尺寸、说明文本和公差要求。
-- ⚖️ **智能语义对比**：不依赖简单的像素死板比对，而是基于 AI 语义理解对比基准图纸和对比图纸中的真实元素差异。
-- 🛠️ **人工辅助审核工作流**：支持人工在前端工作台二次确认高风险差异、忽略误判或补充审核备注。
-- 📊 **标准化报告与导出**：支持网页端直观预览，并可一键导出包含冻结表头、差异高亮和自动列宽的标准化 Excel 审核报告。
-- ⚙️ **健壮的任务管理**：内置基于 FastAPI Background Tasks 的任务流管理，支持多任务并行排队、任务暂停/恢复、以及失败任务的一键清理重试。
+## 核心功能
 
-## 💻 技术栈
+- **PDF 与图片输入**：基准文件和对比文件可分别选择 PDF 或 PNG、JPG/JPEG、WebP 图片；支持源文件预览与下载。
+- **图纸识别与元素提取**：PDF 多页渲染、布局区域识别与裁剪，支持整页识别和区域识别策略，查看提取后的结构化元素。
+- **语义差异对比**：通过视觉模型分析图纸内容，生成差异报告和汇总，辅助定位工程要素变化。
+- **人工审核与导出**：确认差异、忽略误判、添加审核备注，导出元素清单、差异清单与最终 Excel 报告。
+- **任务工作台**：查看任务列表、阶段进度和日志；支持排队、暂停、继续、失败重试与删除。线程池并发处理，默认同时执行 2 个任务，可配置为 1–3 个；暂停在处理阶段边界生效。
+- **多套 AI 配置**：管理模型、API 地址、密钥、超时、重试与优先级。手动切换配置时，如有活动任务则等待其结束后生效；支持服务不可用时自动故障切换、冷却与健康状态展示。
+- **分层日志**：提供任务时间线、异常日志和完整日志，支持系统日志筛选；完整日志保留 7 天，异常记录保留 90 天，并定期清理。
 
-**前端 (Frontend)**
-- React + TypeScript
-- Vite 构建工具
-- Ant Design (UI 组件库)
-- React Router (前端路由)
+## 技术栈
 
-**后端 (Backend)**
-- Python 3 + FastAPI
-- SQLAlchemy + Alembic (ORM 与数据库迁移)
-- PyMuPDF + Pillow (高性能 PDF 渲染与裁剪)
-- 支持接入任何 OpenAI-Compatible 的视觉大模型 API
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | React 19、TypeScript 6、Vite 8、Ant Design 6、React Router 7 |
+| 后端 | Python、FastAPI、SQLAlchemy、Alembic |
+| 图纸处理与导出 | PyMuPDF、Pillow、OpenCV、openpyxl |
+| 数据与存储 | 默认 MySQL；本地文件系统保存原文件、渲染图片、日志与报告 |
+| AI | 兼容 OpenAI Chat Completions 接口的视觉模型；内置 Mock 模式 |
 
-## 🚀 快速启动
+## 快速开始
 
-### 1. 准备工作
-确保你的本地环境已安装以下依赖：
-- Python (推荐 3.10 或以上版本)
-- Node.js (推荐 18 或以上版本)
-- 本地 MySQL 或 SQLite 数据库环境
+以下命令以 **Windows PowerShell** 为例，从仓库根目录开始执行。
 
-### 2. 推荐：一键启动开发环境
+### 1. 环境准备
 
-Windows PowerShell：
+- Python 3.10 或以上版本，建议使用独立虚拟环境。
+- Node.js **22.13+（22.x）或 24+**，以及 npm；当前 Vite / ESLint 不支持旧版 Node.js 18。
+- MySQL：提前创建数据库和有访问权限的账号，连接信息写入 `DATABASE_URL`。Alembic 创建表结构，不会创建 MySQL 数据库或账号。
+- 真实识别需要支持图片输入的视觉模型 API。
+
+```powershell
+git clone https://github.com/xiaoyu-24/PDFAI.git
+cd PDFAI
+```
+
+### 2. 安装后端并配置数据库
+
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+编辑 `backend/.env`，至少填写数据库连接；要使用真实 AI，还需填写 API 地址、密钥与模型：
+
+```dotenv
+DATABASE_URL=mysql+pymysql://pdfai:your-password@localhost:3306/pdfai
+AI_BASE_URL=https://your-provider.example/v1
+AI_API_KEY=your-api-key
+AI_MODEL=your-vision-model
+```
+
+上面是占位示例，请替换为自己的配置。然后在 `backend` 目录执行迁移：
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+cd ..
+```
+
+### 3. 安装前端
+
+```powershell
+cd frontend
+npm ci
+cd ..
+```
+
+### 4. 启动
 
 ```powershell
 .\start-dev.ps1
 ```
 
-脚本会同时启动：
-
-- 后端：`http://localhost:8000`
-- 前端：`http://localhost:5173`
-
-启动前会检查：
-
-- 后端是否使用 `backend\.venv\Scripts\python.exe`
-- 前端是否已安装 `node_modules`
-- Alembic 当前数据库版本是否已经升级到 `head`
-
-也可以分别启动：
+也可以在两个 PowerShell 窗口中，从仓库根目录分别运行：
 
 ```powershell
 .\start-backend.ps1
+```
+
+```powershell
 .\start-frontend.ps1
 ```
 
-`.\start-backend.ps1` 和 `.\start-dev.ps1` 都会调用 `backend\scripts\check_migration_status.py` 检查迁移状态。这个检查只读数据库版本，不会自动修改数据库。
+| 服务 | 地址 |
+| --- | --- |
+| 前端工作台 | [http://localhost:5173](http://localhost:5173) |
+| 后端 API 文档 | [http://localhost:8000/docs](http://localhost:8000/docs) |
+| 健康检查 | [http://localhost:8000/api/health](http://localhost:8000/api/health) |
 
-如果提示数据库表结构未升级，请先执行：
+启动脚本会检查项目虚拟环境、依赖及 Alembic 迁移状态，不会自动升级数据库。若提示迁移落后，请在 `backend` 目录运行 `.\.venv\Scripts\python.exe -m alembic upgrade head` 后重新启动。
+
+前端开发服务器默认将 `/api` 代理到 `http://127.0.0.1:8000`。后端应使用项目虚拟环境启动；遇到 `No module named 'pymysql'` 等错误时，先检查是否误用了系统 Python。
+
+## 使用流程
+
+1. 打开「系统设置」，配置并启用视觉模型，按需调整识别策略。
+2. 新建任务，分别选择基准文件和对比文件的格式并上传。
+3. 在任务进度页查看当前阶段、时间线和异常信息；需要时暂停、继续或重试。
+4. 查看源文件、提取元素和差异报告，人工确认差异并填写备注。
+5. 导出 Excel 元素清单、差异清单或最终报告。
+
+没有真实可用的 AI 配置时，系统会使用 **Mock 模拟数据**，用于开发和流程演示，不代表真实图纸识别结果。真实模型的输出也需要人工复核。
+
+## 配置说明
+
+完整环境变量示例见 [`backend/.env.example`](backend/.env.example)，配置定义见 [`backend/app/core/config.py`](backend/app/core/config.py)。
+
+| 配置 | 默认值 / 说明 |
+| --- | --- |
+| `DATABASE_URL` | MySQL 连接串，需按实际环境修改 |
+| `STORAGE_ROOT` | `../storage`；相对路径以 `backend` 目录为基准 |
+| `TASK_MAX_WORKERS` | `2`；允许 `1–3`，修改后重启后端 |
+| `PDF_RENDER_DPI` | `300`；可在设置页调整 |
+| `AI_ENABLE_FULL_PAGE_EXTRACTION` | `true`；启用整页元素提取 |
+| `AI_ENABLE_REGION_EXTRACTION` | `false`；按需启用区域元素提取 |
+| `AI_IMAGE_MAX_EDGE` / `AI_IMAGE_JPEG_QUALITY` | `1600` / `75`；控制发送给模型的图像大小与质量 |
+| `AI_TIMEOUT_SECONDS` / `AI_MAX_RETRIES` | `120` / `2` |
+| `AI_ENABLE_AUTO_FAILOVER` | `true`；可用性错误触发候选配置切换 |
+| `AI_FAILOVER_COOLDOWN_SECONDS` | `300`；失败配置的冷却时长 |
+| `AI_FAILOVER_MAX_SWITCHES` | `0`；不额外限制，最多尝试候选链中的全部配置 |
+| `AI_FAILOVER_ON_VISION_UNSUPPORTED` | `false`；默认不因模型不支持图片而切换 |
+| `CORS_ORIGINS` | 额外允许的前端来源，逗号分隔；始终包含本地开发来源 |
+| `VITE_API_BASE_URL` | 前端默认 `/api`；独立 API 域名应在构建时设置 |
+
+在设置页创建的 AI 配置保存在数据库中，密钥加密存储；加密密钥文件位于 `storage/config/ai-config.key`（随 `STORAGE_ROOT` 改变）。迁移或备份时应一并保留数据库与该密钥文件，否则已有配置中的 API 密钥无法解密。已有配置建议直接在设置页维护。
+
+## 开发与验证
+
+后端测试（在 `backend` 目录）：
 
 ```powershell
-cd backend
-.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m pytest
 ```
 
-然后重新运行：
+前端检查（在 `frontend` 目录）：
 
 ```powershell
-cd ..
-.\start-dev.ps1
+npm run test:navigation
+npm run lint
+npm run build
 ```
 
-### 3. 首次安装后端依赖
-```powershell
-cd backend
+前端还提供 API 地址、任务并发显示、完整日志、分页和 AI 配置检查，详见 [`frontend/package.json`](frontend/package.json)。
 
-# 1. 创建并激活虚拟环境 (Windows 示例)
-python -m venv .venv
-
-# 2. 安装项目依赖
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-# 3. 配置环境变量
-# 复制一份 .env.example 重命名为 .env，并填写其中的数据库连接和 AI 密钥
-Copy-Item .env.example .env
-
-# 4. 执行数据库迁移，创建数据表
-.\.venv\Scripts\python.exe -m alembic upgrade head
-
-# 5. 启动后端开发服务器
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
-```
-
-不要直接运行全局 `uvicorn`。如果出现 `ModuleNotFoundError: No module named 'pymysql'`，通常说明正在使用系统 Python，而不是项目虚拟环境。
-
-### 4. 首次安装前端依赖
-```powershell
-cd frontend
-
-# 1. 安装 NPM 依赖
-npm install
-
-# 2. 启动前端开发服务器
-npm run dev
-```
-
-成功启动后，在浏览器中打开 `http://localhost:5173` 即可进入系统工作台体验。
-
-## 🧱 数据库迁移规则
-
-每次修改 SQLAlchemy 模型字段时，必须同步 Alembic migration：
+修改 SQLAlchemy 模型时，需要同步 Alembic migration，在 `backend` 目录执行并检查生成的迁移内容：
 
 ```powershell
-cd backend
 .\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe_change"
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-如果已经新增 migration，但真机 MySQL 还没有升级，后端启动前需要先执行：
+## 部署
+
+仓库提供 Windows 内网部署说明和 Linux 服务器发布脚本：
+
+- [Windows 内网部署指南](deploy/windows-intranet.md)
+- [Linux 服务器初始化脚本](deploy/server-bootstrap-github.sh)
+- [本地生产发布脚本](deploy/publish-deploy-prod.ps1)
+- [服务器更新脚本](deploy/server-update.sh)
+
+已有生产环境的更新顺序：
 
 ```powershell
-cd backend
-.\.venv\Scripts\python.exe -m alembic upgrade head
+# 本地仓库根目录；发布前需要干净的工作区
+.\deploy\publish-deploy-prod.ps1
 ```
 
-## 📁 主要目录结构说明
+```bash
+# 服务器项目目录
+bash deploy/server-update.sh
+```
+
+本地发布脚本运行检查、构建前端并更新 GitHub 的 `deploy-prod` 分支；服务器脚本拉取部署代码、安装后端依赖、执行迁移并重启服务。脚本包含当前项目的域名、目录和服务名，部署到其他环境前请核对参数与配置。
+
+仅更新 GitHub README 不需要运行生产发布脚本。本地文件修改不会自动上传到 GitHub。
+
+## 目录结构
 
 ```text
 PDFAI/
-├── backend/            # FastAPI 后端源码目录
-│   ├── app/            # 核心业务逻辑 (API 路由, 数据库模型, 核心流程控制等)
-│   ├── tests/          # pytest 自动化测试用例
-│   └── alembic/        # 数据库表结构迁移脚本
-├── frontend/           # React + Vite 前端源码目录
-│   ├── src/            # 前端业务代码 (页面 pages, 组件 components, API 接口封装等)
-│   └── package.json    # 前端依赖配置文件
-└── storage/            # 运行时存储目录 (Git 已忽略，用于存放解析过程中的图片、PDF和 AI 结果)
+├── backend/
+│   ├── app/
+│   │   ├── ai/           # 视觉模型适配、Mock 与故障切换
+│   │   ├── api/          # 任务、设置与系统日志接口
+│   │   ├── services/     # 图纸处理、任务调度、AI 配置与日志
+│   │   ├── models/       # 数据库模型
+│   │   └── exports/      # Excel 导出
+│   ├── alembic/          # 数据库迁移
+│   ├── scripts/          # 启动与迁移辅助检查
+│   └── tests/            # 后端测试
+├── frontend/
+│   ├── src/              # 页面、组件、路由与 API 客户端
+│   └── scripts/          # 前端回归检查
+├── deploy/               # 发布脚本与部署说明
+├── storage/              # 运行时数据（Git 忽略）
+├── start-dev.ps1          # Windows 开发环境启动入口
+├── README.md             # 中文说明
+└── README.en.md          # English documentation
 ```
-
-## 🛡️ 注意事项
-
-- 在 `settings` 页面或 `.env` 中配置 AI 时，请确保使用的是支持图片识别的 **Vision 模型** (如 `gpt-4o`, `gpt-4-vision-preview` 等)。
-- 默认 PDF 渲染 DPI 为 600，如果你发现处理过慢或本地内存吃紧，可在界面设置中适度调低 DPI 选项（如调整为 300 或 150）。
